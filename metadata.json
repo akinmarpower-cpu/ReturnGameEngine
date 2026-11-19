@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Return Game Engine App",
+  "description": "Professional 2D Game Engine. Design, build and export high-performance 2D games with a visual Godot/Unity-style editor. Features advanced scene management, asset pipeline, visual scripting, and cross-platform export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
