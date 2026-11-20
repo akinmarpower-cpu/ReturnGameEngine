@@ -146,6 +146,7 @@ const categorizedActionOptions: {
     { value: 'SetModel3D', label: 'Cambiar Modelo 3D (.glb)', needsParams: ['modelUrl'] },
     { value: 'SetCamera3DMode', label: 'event.action.setCamera3DMode', needsParams: ['cameraMode', 'targetObjectName'] },
     { value: 'SetCamera3DOffset', label: 'event.action.setCamera3DOffset', needsParams: ['cx', 'cy', 'cz'] },
+    { value: 'SetCamera3DMovement', label: 'Mover Cámara 3D (Activar/Desactivar)', needsParams: ['enabled'] },
     { value: 'LookAtObject3D', label: 'event.action.lookAtObject3D', needsParams: ['targetObjectName'] },
     { value: 'MoveTowards3D', label: 'event.action.moveTowards3D', needsParams: ['targetObjectName', 'speed'] },
     { value: 'CreateObject3D', label: 'event.action.createObject3D', needsParams: ['templateObjectName', 'x3d', 'y3d', 'z3d'] },
@@ -164,6 +165,7 @@ const categorizedActionOptions: {
     { value: 'SetObjectPosition', label: 'event.action.setPosition', needsParams: ['x', 'y'] },
     { value: 'TeleportToObject', label: 'Teletransportar a Objeto', needsParams: ['targetObjectName'] },
     { value: 'MoveObject', label: 'event.action.moveDirection', needsParams: ['direction', 'speed'] },
+    { value: 'RunAtSpeed', label: 'event.action.runAtSpeed', needsParams: ['speed', 'runMode'] },
     { value: 'SetVelocityX', label: 'event.action.setVelocityX', needsParams: ['vx'] },
     { value: 'SetVelocityY', label: 'event.action.setVelocityY', needsParams: ['vy'] },
     { value: 'MoveTo', label: 'event.action.moveTo', needsParams: ['x', 'y', 'duration'] },
@@ -297,6 +299,7 @@ const BLOCK_3D_PALETTE_CATEGORIES: {
     accent: 'border-blue-500/40 bg-blue-950/20',
     blocks: [
       { id: 'a_move3d', kind: 'action', action: 'Move3D', label: 'Mover 3D (dX, dY, dZ)', color: 'bg-blue-600 border-blue-400', badge: 'MOV 3D', defaultParams: { dx: 2, dy: 0, dz: 0 } },
+      { id: 'a_runspeed3d', kind: 'action', action: 'RunAtSpeed', label: 'Correr a Velocidad (Personalizada)', color: 'bg-blue-600 border-blue-400', badge: 'CORRER', defaultParams: { speed: 12, runMode: 'active' } },
       { id: 'a_pos3d', kind: 'action', action: 'SetPosition3D', label: 'Fijar Posición 3D (X, Y, Z)', color: 'bg-blue-600 border-blue-400', badge: 'POS 3D', defaultParams: { x3d: 0, y3d: 1, z3d: 0 } },
       { id: 'a_jump3d', kind: 'action', action: 'ForceJump3D', label: 'Salto 3D (Fuerza Y)', color: 'bg-blue-600 border-blue-400', badge: 'SALTO 3D', defaultParams: { jumpForce: 7 } },
       { id: 'a_imp3d', kind: 'action', action: 'ApplyImpulse3D', label: 'Impulso 3D (X, Y, Z)', color: 'bg-blue-600 border-blue-400', badge: 'IMPULSO', defaultParams: { ix: 0, iy: 6, iz: -4 } },
@@ -326,6 +329,7 @@ const BLOCK_3D_PALETTE_CATEGORIES: {
     blocks: [
       { id: 'a_cam_mode', kind: 'action', action: 'SetCamera3DMode', label: 'Modo Cámara 3D', color: 'bg-emerald-600 border-emerald-400', badge: 'CÁM 3D', defaultParams: { cameraMode: 'thirdPerson' } },
       { id: 'a_cam_off', kind: 'action', action: 'SetCamera3DOffset', label: 'Offset Cámara 3D (X, Y, Z)', color: 'bg-emerald-600 border-emerald-400', badge: 'OFFSET', defaultParams: { cx: 0, cy: 5, cz: 9 } },
+      { id: 'a_cam_move', kind: 'action', action: 'SetCamera3DMovement', label: 'Mover Cámara 3D (Libre/Fija)', color: 'bg-emerald-600 border-emerald-400', badge: 'MOV CÁM', defaultParams: { enabled: true } },
       { id: 'a_light3d', kind: 'action', action: 'SetLight3D', label: 'Configurar Luz 3D', color: 'bg-emerald-600 border-emerald-400', badge: 'LUZ 3D', defaultParams: { intensity: 1.8, distance: 18, color: '#fef08a' } },
       { id: 'a_fog3d', kind: 'action', action: 'SetFog3D', label: 'Niebla 3D (Fog)', color: 'bg-emerald-600 border-emerald-400', badge: 'NIEBLA', defaultParams: { enabled: true, color: '#0f172a', density: 0.025 } },
       { id: 'a_skybox3d', kind: 'action', action: 'SetSkybox3D', label: 'Skybox 3D (Imagen)', color: 'bg-emerald-600 border-emerald-400', badge: 'SKYBOX', defaultParams: { imageUrl: '' } },
@@ -493,7 +497,7 @@ const EventEditor: React.FC<EventEditorProps> = ({
     'SaveGame', 'LoadGame', 'StartTimer', 'StopTimer', 'Wait', 'SetBackgroundColor',
     'SetCameraZoom', 'SetSceneUnlocked', 'SetJoystickEnabled', 'ShowDialogue', 'ShowConsole',
     'PlaySound', 'SetBackgroundMusic', 'PauseBackgroundMusic', 'ResumeBackgroundMusic',
-    'StopBackgroundMusic', 'SetBackgroundMusicVolume', 'SetCamera3DMode', 'SetCamera3DOffset',
+    'StopBackgroundMusic', 'SetBackgroundMusicVolume', 'SetCamera3DMode', 'SetCamera3DOffset', 'SetCamera3DMovement',
     'SetFog3D', 'SetSkybox3D', 'SetQuestState', 'CreateMatch', 'JoinMatch', 'SendNetworkMessage',
     'CreateObject', 'CreateObject3D', 'GenerateObjectAt'
   ]);
@@ -521,6 +525,7 @@ const EventEditor: React.FC<EventEditorProps> = ({
     if (actionName === 'ToggleBooleanVariable') return { variable: firstVar };
     if (actionName === 'AddToObjectVariable') return { variable: '', value: '1' };
     if (actionName === 'SetObjectVariable') return { variable: '', value: '0' };
+    if (actionName === 'RunAtSpeed') return { speed: scene?.sceneMode === '3d' ? 12 : 400, runMode: 'active' };
     if (actionName === 'SaveGame' || actionName === 'LoadGame') return { slot: '1' };
     if (actionName === 'Wait') return { duration: 1 };
     return {};
@@ -1002,6 +1007,15 @@ const EventEditor: React.FC<EventEditorProps> = ({
               <option value="left">{t('event.direction.left')}</option>
               <option value="up">{t('event.direction.up')}</option>
               <option value="down">{t('event.direction.down')}</option>
+            </select>
+          );
+        case 'runMode':
+          return (
+            <select key={param} className="input-field text-emerald-300 font-semibold" value={params?.[param] ?? 'active'} onChange={e => updateParams({ [param]: e.target.value })}>
+              <option value="active">Activar Carrera (al moverse)</option>
+              <option value="onSprint">Al Mantener Correr (Shift/Mando)</option>
+              <option value="autoMove">Correr Automático (su dirección)</option>
+              <option value="stop">Detener Carrera (Vel. Normal)</option>
             </select>
           );
         case 'axis':
@@ -1730,7 +1744,7 @@ const EventEditor: React.FC<EventEditorProps> = ({
                     blockStackActions.map((act, idx) => {
                       const actDef = actionOptions.find(o => o.value === act.action);
                       const colorClass =
-                        ['SetCamera3DMode', 'SetCamera3DOffset', 'SetLight3D', 'SetFog3D', 'SetSkybox3D'].includes(act.action || '')
+                        ['SetCamera3DMode', 'SetCamera3DOffset', 'SetCamera3DMovement', 'SetLight3D', 'SetFog3D', 'SetSkybox3D'].includes(act.action || '')
                           ? 'bg-emerald-700/90 border-emerald-400'
                           : ['Rotate3D', 'RotateContinuously3D', 'Scale3D', 'SetShape3D', 'SetColor3D', 'SetModel3D', 'PlayAnimation3D', 'StopAnimation3D'].includes(act.action || '')
                           ? 'bg-violet-700/90 border-violet-400'

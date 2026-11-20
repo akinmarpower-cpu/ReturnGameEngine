@@ -1770,6 +1770,37 @@ const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                             onChange={v => onUpdateScene({ camera3DFov: Math.max(25, Math.min(120, Number(v) || 60)) })}
                         />
                     </PropertyRow>
+                    <PropertyRow label="Mover Cámara 3D">
+                        <button
+                            type="button"
+                            data-testid="scene-cam3d-movement-toggle"
+                            onClick={() => onUpdateScene({ camera3DMovementEnabled: activeScene.camera3DMovementEnabled === false })}
+                            className={`w-full py-1 text-[10px] font-bold rounded border transition-colors ${activeScene.camera3DMovementEnabled !== false ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-[#2a2a2a] border-[#333333] text-gray-400'}`}
+                            title="Activa o desactiva que el jugador pueda mover/rotar la cámara 3D libremente (ratón, táctil o mando)"
+                        >
+                            {activeScene.camera3DMovementEnabled !== false ? 'ACTIVADO (LIBRE)' : 'DESACTIVADO (FIJA)'}
+                        </button>
+                    </PropertyRow>
+                    <PropertyRow label="Stick Der. (Mando Pro)">
+                        <button
+                            type="button"
+                            data-testid="scene-cam3d-rightstick-toggle"
+                            onClick={() => onUpdateScene({ camera3DRightStickEnabled: !activeScene.camera3DRightStickEnabled })}
+                            className={`w-full py-1 text-[10px] font-bold rounded border transition-colors ${activeScene.camera3DRightStickEnabled ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-[#2a2a2a] border-[#333333] text-gray-400'}`}
+                            title="Permite mover la cámara 3D usando el joystick derecho de un Mando Pro / Gamepad"
+                        >
+                            {activeScene.camera3DRightStickEnabled ? 'ACTIVADO' : 'DESACTIVADO'}
+                        </button>
+                    </PropertyRow>
+                    {activeScene.camera3DRightStickEnabled && activeScene.camera3DMovementEnabled !== false && (
+                        <PropertyRow label="Sensib. Stick Der.">
+                            <CompactInput
+                                type="number"
+                                value={activeScene.camera3DRightStickSensitivity ?? 2.4}
+                                onChange={v => onUpdateScene({ camera3DRightStickSensitivity: Math.max(0.2, Math.min(10, Number(v) || 2.4)) })}
+                            />
+                        </PropertyRow>
+                    )}
                     <PropertyRow label="Luz Ambiental">
                         <CompactInput
                             type="number"

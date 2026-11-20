@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { ProjectData } from '../types';
 import {
   generateGameHTML,
   compressProjectAssets,
   generateGameZIP,
   generateGameAPKPackage,
+  generateWindowsElectronZIP,
   applyExportDimensionFilter,
   getSceneDimension,
   type ExportDimensionMode,
@@ -19,6 +20,7 @@ interface ExportModalProps {
 }
 
 const APK_SERVER_URL_STORAGE_KEY = 'return2d_apk_server_url';
+const WIN_SERVER_URL_STORAGE_KEY = 'return2d_win_server_url';
 
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -60,11 +62,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
       return '';
     }
   });
-  const [apkServerStatus, setApkServerStatus] = useState<'idle' | 'checking' | 'connected' | 'local' | 'offline' | 'none'>('idle');
-  const [apkStatusMessage, setApkStatusMessage] = useState<string>('Verificando servidor de compilación APK...');
+  const [apkServerStatus, setApkServerStatus] = useState<'idle' | 'checking' | 'connected' | 'local' | 'standalone' | 'offline' | 'none'>('idle');
+  const [apkStatusMessage, setApkStatusMessage] = useState<string>('Inicializando compilador directo APK...');
   const [isBuildingApk, setIsBuildingApk] = useState(false);
 
-  // Android APK Keystore Signing State
+  // Android APK Signing State (Debug predeterminado o Firma con Archivos / Keystore / Autogenerada)
   const [apkBuildType, setApkBuildType] = useState<'debug' | 'release'>('debug');
   const [apkPackageName, setApkPackageName] = useState<string>(() => {
     const raw = (projectData?.name || projectData?.scenes?.[0]?.name || 'mijuego').toLowerCase().replace(/[^a-z0-9]/g, '') || 'mijuego';
@@ -72,16 +74,38 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
   });
   const [apkVersionName, setApkVersionName] = useState<string>('1.0.0');
   const [apkVersionCode, setApkVersionCode] = useState<number>(1);
-  const [keystoreMode, setKeystoreMode] = useState<'upload' | 'generate'>('generate');
+  const [releaseSigningMode, setReleaseSigningMode] = useState<'files' | 'keystore' | 'generate'>('files');
   const [keystoreFileName, setKeystoreFileName] = useState<string>('release.keystore');
   const [keystoreBase64, setKeystoreBase64] = useState<string>('');
   const [keystoreType, setKeystoreType] = useState<'pkcs12' | 'jks'>('pkcs12');
   const [keystoreAlias, setKeystoreAlias] = useState<string>('releasekey');
   const [storePassword, setStorePassword] = useState<string>('return2d123');
   const [keyPassword, setKeyPassword] = useState<string>('return2d123');
+  const [certBase64, setCertBase64] = useState<string>('');
+  const [certFileName, setCertFileName] = useState<string>('');
+  const [privateKeyBase64, setPrivateKeyBase64] = useState<string>('');
+  const [privateKeyFileName, setPrivateKeyFileName] = useState<string>('');
+  const [privateKeyPassword, setPrivateKeyPassword] = useState<string>('');
+  const [isGeneratingSigningFiles, setIsGeneratingSigningFiles] = useState<boolean>(false);
   const [dnCommonName, setDnCommonName] = useState<string>('Return Game Studio');
   const [dnOrganization, setDnOrganization] = useState<string>('Return Interactive');
   const [dnCountry, setDnCountry] = useState<string>('ES');
+
+  // Windows Electron (.zip & .exe) State
+  const [winFullscreen, setWinFullscreen] = useState<boolean>(false);
+  const [winVersion, setWinVersion] = useState<string>('1.0.0');
+  const [winTarget, setWinTarget] = useState<'portable' | 'nsis'>('portable');
+  const [winServerUrl, setWinServerUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem(WIN_SERVER_URL_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [winServerStatus, setWinServerStatus] = useState<'idle' | 'checking' | 'local' | 'remote' | 'package-only' | 'offline'>('idle');
+  const [winStatusMessage, setWinStatusMessage] = useState<string>('Paquete Windows Electron (.zip con icon.ico, app:// sin CORS y scripts 1-clic para .exe) listo.');
+  const [isBuildingWinExe, setIsBuildingWinExe] = useState<boolean>(false);
+  const threeVendorCacheRef = useRef<string | null>(null);
 
   // Non-blocking custom dialog states
   const [customConfirm, setCustomConfirm] = useState<{
@@ -127,17 +151,20 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
       if (resp.ok && data?.ok) {
         if (data.mode === 'local') {
           setApkServerStatus('local');
-          setApkStatusMessage(data.message || 'Android SDK y Cordova detectados en este servidor.');
+          setApkStatusMessage(data.message || 'Android SDK y Cordova detectados localmente.');
+        } else if (data.mode === 'standalone') {
+          setApkServerStatus('standalone');
+          setApkStatusMessage(data.message || 'Compilador directo integrado listo (sin servidor externo: firma Debug y Release con archivos).');
         } else {
           setApkServerStatus('connected');
           setApkStatusMessage(data.message || `Conectado al servidor APK (${data.serverUrl || target}).`);
         }
       } else if (data?.mode === 'none') {
         setApkServerStatus('none');
-        setApkStatusMessage(data.message || 'Sin servidor APK remoto conectado. Conecta una URL o descarga apk-build-server.mjs.');
+        setApkStatusMessage(data.message || 'Sin servidor APK remoto configurado.');
       } else {
         setApkServerStatus('offline');
-        setApkStatusMessage(data?.message || 'No se pudo conectar al servidor de compilación APK.');
+        setApkStatusMessage(data?.message || 'No se pudo conectar al servidor remoto opcional.');
       }
     } catch (err: any) {
       setApkServerStatus('offline');
@@ -159,20 +186,19 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
           return;
         }
         const saved = apkServerUrl.trim();
-        const urlToCheck = saved || info.defaultServerUrl || '';
-        if (!saved && info.defaultServerUrl) {
-          setApkServerUrl(info.defaultServerUrl);
-        }
-        if (urlToCheck) {
-          await checkApkServerConnection(urlToCheck);
+        if (saved) {
+          await checkApkServerConnection(saved);
+        } else if (info.standaloneReady !== false) {
+          setApkServerStatus('standalone');
+          setApkStatusMessage('Compilador y firmador APK integrado listo: genera tu .apk firmado directamente sin servidor de compilación.');
         } else {
           setApkServerStatus('none');
-          setApkStatusMessage('Conecta la URL de tu servidor APK (p. ej. http://localhost:4050) para compilar .apk de depuración sin .zip.');
+          setApkStatusMessage('Conecta la URL de tu servidor APK si deseas compilar remotamente.');
         }
       } catch {
         if (!cancelled) {
-          setApkServerStatus('none');
-          setApkStatusMessage('No se pudo consultar /api/apk-server/status.');
+          setApkServerStatus('standalone');
+          setApkStatusMessage('Listo para exportar .apk firmado en modo integrado.');
         }
       }
     })();
@@ -180,6 +206,86 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const checkWinServerConnection = useCallback(async (urlToTest?: string) => {
+    const target = (urlToTest ?? winServerUrl).trim();
+    setWinServerStatus('checking');
+    setWinStatusMessage('Verificando compilador Windows (.exe)...');
+    try {
+      const resp = await fetch('/api/win-server/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serverUrl: target || undefined }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data?.ok) {
+        if (data.mode === 'local') {
+          setWinServerStatus('local');
+          setWinStatusMessage(data.message || 'Electron-Builder local detectado para compilar .exe directo.');
+        } else if (data.mode === 'remote') {
+          setWinServerStatus('remote');
+          setWinStatusMessage(data.message || `Conectado al servidor Windows (.exe) en ${data.serverUrl || target}.`);
+        } else {
+          setWinServerStatus('package-only');
+          setWinStatusMessage(data.message || 'Paquete Windows Electron (.zip listo para .exe) disponible sin servidor externo.');
+        }
+      } else {
+        setWinServerStatus('offline');
+        setWinStatusMessage(data?.message || 'No se pudo conectar al servidor Windows remoto.');
+      }
+    } catch (err: any) {
+      setWinServerStatus('offline');
+      setWinStatusMessage(`Error al verificar servidor Windows: ${err?.message || 'Sin respuesta'}`);
+    }
+  }, [winServerUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/win-server/status');
+        if (!res.ok) return;
+        const info = await res.json();
+        if (cancelled) return;
+        if (info.localWinBuilderAvailable) {
+          setWinServerStatus('local');
+          setWinStatusMessage('Electron-Builder detectado localmente: compila .exe o descarga el .zip Electron.');
+          return;
+        }
+        const saved = winServerUrl.trim();
+        if (saved) {
+          await checkWinServerConnection(saved);
+        } else {
+          setWinServerStatus('package-only');
+          setWinStatusMessage('Paquete Windows Electron (.zip listo para .exe) listo sin servidor. Incluye icon.ico, Three.js offline y .bat automáticos.');
+        }
+      } catch {
+        if (!cancelled) setWinServerStatus('package-only');
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const fetchLocalThreeVendorScript = useCallback(async (filtered: ProjectData | null): Promise<string | undefined> => {
+    if (!filtered) return undefined;
+    const needs3D = Boolean(filtered.scenes?.some(s => getSceneDimension(s) === '3d'));
+    if (!needs3D) return undefined;
+    if (threeVendorCacheRef.current) return threeVendorCacheRef.current;
+    try {
+      const resp = await fetch('/api/vendor/three-bundle.js');
+      if (resp.ok) {
+        const code = await resp.text();
+        if (code && code.length > 1000) {
+          threeVendorCacheRef.current = code;
+          return code;
+        }
+      }
+    } catch {
+      // Fallback to CDN importmap if offline vendor bundle fetch fails
+    }
+    return undefined;
   }, []);
 
   const getOptimizedData = async (): Promise<ProjectData | null> => {
@@ -405,11 +511,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
       const baseData = getEffectiveProjectData();
       if (!baseData) return;
       setIsOptimizing(true);
-      setOptimizationProgress('Iniciando empaquetado del paquete ZIP...');
+      setOptimizationProgress('Iniciando empaquetado del paquete ZIP optimizado...');
       try {
+          const filtered = applyExportDimensionFilter(baseData, { dimensionMode });
+          const threeVendorScript = await fetchLocalThreeVendorScript(filtered);
           const zipBlob = await generateGameZIP(baseData, (msg) => {
               setOptimizationProgress(msg);
-          }, { dimensionMode, skipStartScreen });
+          }, { dimensionMode, skipStartScreen, useLocalThreeVendor: Boolean(threeVendorScript), threeVendorScript });
           const baseName = exportFileName.trim() || 'mi_juego';
           const finalFilename = baseName.toLowerCase().endsWith('.zip') ? baseName : `${baseName}.zip`;
 
@@ -425,36 +533,119 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
       }
   };
 
-  const handleKeystoreFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
+  const readFileAsBase64 = (file: File, onDone: (base64: string, cleanName: string) => void) => {
       const reader = new FileReader();
       reader.onload = () => {
           const result = typeof reader.result === 'string' ? reader.result : '';
           const commaIdx = result.indexOf(',');
           const b64 = commaIdx >= 0 ? result.slice(commaIdx + 1) : result;
-          setKeystoreBase64(b64);
-          setKeystoreFileName(file.name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'release.keystore');
-          setKeystoreMode('upload');
+          onDone(b64, file.name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'file');
       };
       reader.readAsDataURL(file);
   };
 
+  const handleKeystoreFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      readFileAsBase64(file, (b64, cleanName) => {
+          setKeystoreBase64(b64);
+          setKeystoreFileName(cleanName || 'release.keystore');
+          setReleaseSigningMode('keystore');
+      });
+  };
+
+  const handleCertFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      readFileAsBase64(file, (b64, cleanName) => {
+          setCertBase64(b64);
+          setCertFileName(cleanName || 'certificado.pem');
+          setReleaseSigningMode('files');
+      });
+  };
+
+  const handlePrivateKeyFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      readFileAsBase64(file, (b64, cleanName) => {
+          setPrivateKeyBase64(b64);
+          setPrivateKeyFileName(cleanName || 'clave_privada.key');
+          setReleaseSigningMode('files');
+      });
+  };
+
+  const handleGenerateAndDownloadSigningFiles = async () => {
+      setIsGeneratingSigningFiles(true);
+      try {
+          const resp = await fetch('/api/apk/generate-signing-files', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  commonName: dnCommonName.trim() || 'Return Game Studio',
+                  organization: dnOrganization.trim() || 'Return Interactive',
+                  country: (dnCountry.trim() || 'ES').slice(0, 2).toUpperCase(),
+                  alias: keystoreAlias.trim() || 'releasekey',
+                  storePassword: storePassword.trim() || 'return2d123',
+              }),
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data?.ok) {
+              throw new Error(data?.message || 'Error al generar certificado y clave.');
+          }
+          const certB64 = btoa(unescape(encodeURIComponent(data.certPem)));
+          const keyB64 = btoa(unescape(encodeURIComponent(data.keyPem)));
+          setCertBase64(certB64);
+          setCertFileName('release-cert.pem');
+          setPrivateKeyBase64(keyB64);
+          setPrivateKeyFileName('release-key.pem');
+          setPrivateKeyPassword('');
+          if (data.keystoreP12Base64) {
+              setKeystoreBase64(data.keystoreP12Base64);
+              setKeystoreFileName('release.keystore');
+          }
+          // Download .pem certificate & .key private key so user keeps their signing identity
+          triggerStandardDownload(data.certPem, 'release-cert.pem', 'application/x-pem-file', false);
+          setTimeout(() => {
+              triggerStandardDownload(data.keyPem, 'release-key.pem', 'application/x-pem-file', false);
+          }, 150);
+          setReleaseSigningMode('files');
+          setCustomAlert({
+              title: 'Certificado y Clave Generados',
+              message: `Se han generado y cargado en el editor tus archivos de firma Release:\n\n• release-cert.pem\n• release-key.pem\n• Huella SHA-256: ${data.sha256Fingerprint}\n\nGuarda ambos archivos en un lugar seguro para futuras actualizaciones.`,
+          });
+      } catch (err: any) {
+          setCustomAlert({
+              title: 'Error generando firma',
+              message: err?.message || 'No se pudieron generar los archivos de firma.',
+          });
+      } finally {
+          setIsGeneratingSigningFiles(false);
+      }
+  };
+
   const buildSigningConfig = useCallback((): ApkSigningConfig => {
       const cleanPkg = apkPackageName.trim().replace(/[^a-zA-Z0-9_.]/g, '') || 'com.return2d.game';
+      const activeMode: ApkSigningConfig['signingMode'] =
+          apkBuildType === 'debug' ? 'debug' : releaseSigningMode;
       return {
           buildType: apkBuildType,
+          signingMode: activeMode,
           packageName: cleanPkg.includes('.') ? cleanPkg : `com.return2d.${cleanPkg}`,
           versionName: apkVersionName.trim() || '1.0.0',
           versionCode: Math.max(1, Number(apkVersionCode) || 1),
           appName: projectData?.scenes?.[0]?.name || exportFileName.trim() || 'Return Game',
-          keystoreBase64: apkBuildType === 'release' && keystoreMode === 'upload' ? keystoreBase64 : undefined,
+          keystoreBase64: apkBuildType === 'release' && releaseSigningMode === 'keystore' ? keystoreBase64 : undefined,
           keystoreFileName: keystoreFileName.trim() || 'release.keystore',
           storePassword: storePassword.trim() || 'return2d123',
           alias: keystoreAlias.trim() || 'releasekey',
           keyPassword: keyPassword.trim() || storePassword.trim() || 'return2d123',
           keystoreType,
-          generateKeystore: apkBuildType === 'release' && keystoreMode === 'generate',
+          generateKeystore: apkBuildType === 'release' && releaseSigningMode === 'generate',
+          certBase64: apkBuildType === 'release' && releaseSigningMode === 'files' ? certBase64 : undefined,
+          certFileName: certFileName.trim() || 'release-cert.pem',
+          privateKeyBase64: apkBuildType === 'release' && releaseSigningMode === 'files' ? privateKeyBase64 : undefined,
+          privateKeyFileName: privateKeyFileName.trim() || 'release-key.pem',
+          privateKeyPassword: privateKeyPassword || undefined,
           distinguishedName: {
               commonName: dnCommonName.trim() || 'Return Game',
               organization: dnOrganization.trim() || 'Return Studio',
@@ -468,13 +659,18 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
       apkVersionCode,
       projectData,
       exportFileName,
-      keystoreMode,
+      releaseSigningMode,
       keystoreBase64,
       keystoreFileName,
       storePassword,
       keystoreAlias,
       keyPassword,
       keystoreType,
+      certBase64,
+      certFileName,
+      privateKeyBase64,
+      privateKeyFileName,
+      privateKeyPassword,
       dnCommonName,
       dnOrganization,
       dnCountry,
@@ -486,15 +682,24 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
           return 'El Package ID de Android debe tener formato de paquete válido (ej. com.tunombre.mijuego).';
       }
       if (apkBuildType === 'release') {
-          if (!keystoreAlias.trim()) return 'Debes indicar el Alias de la Keystore para compilar en modo Release.';
-          if (!storePassword.trim() || storePassword.trim().length < 6) {
-              return 'La contraseña del Store Password de la Keystore debe tener al menos 6 caracteres.';
-          }
-          if (!keyPassword.trim() || keyPassword.trim().length < 6) {
-              return 'La contraseña Key Password de la Keystore debe tener al menos 6 caracteres.';
-          }
-          if (keystoreMode === 'upload' && !keystoreBase64) {
-              return 'Sube tu archivo .keystore / .jks o selecciona "Autogenerar Keystore (keytool)".';
+          if (releaseSigningMode === 'files') {
+              if (!certBase64) {
+                  return 'Selecciona tu archivo de certificado (.pem, .crt, .cer o .der) o pulsa "Autogenerar y Descargar".';
+              }
+              if (!privateKeyBase64) {
+                  return 'Selecciona tu archivo de clave privada (.pem, .key o .pk8) para firmar el APK.';
+              }
+          } else if (releaseSigningMode === 'keystore') {
+              if (!keystoreBase64) {
+                  return 'Sube tu archivo .keystore / .p12 o cambia a "Firmar con Archivos".';
+              }
+              if (!storePassword.trim()) {
+                  return 'Indica la contraseña (Store Password) del archivo .keystore / .p12.';
+              }
+          } else if (releaseSigningMode === 'generate') {
+              if (!dnCommonName.trim()) {
+                  return 'Indica un Nombre / Autor (CN) para generar el certificado Release.';
+              }
           }
       }
       return null;
@@ -505,24 +710,31 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
       if (!baseData) return;
       const validationErr = validateApkSigning();
       if (validationErr) {
-          setCustomAlert({ title: 'Configuración de Firma Keystore', message: validationErr });
+          setCustomAlert({ title: 'Configuración de Firma APK', message: validationErr });
           return;
       }
       const signing = buildSigningConfig();
       const suffix = signing.buildType === 'release' ? 'release' : 'debug';
+      const isStandaloneFastPath = (apkServerStatus === 'standalone' || apkServerStatus === 'none' || apkServerStatus === 'idle') && !apkServerUrl.trim();
 
       setIsBuildingApk(true);
       setIsOptimizing(true);
-      setOptimizationProgress(`Preparando bundle Android ${suffix.toUpperCase()} con firma Keystore para enviar al servidor APK...`);
+      setOptimizationProgress(`Optimizando assets y compilando APK ${suffix.toUpperCase()} firmado (${signing.signingMode === 'debug' ? 'Debug predeterminado' : signing.signingMode === 'files' ? 'con archivos' : signing.signingMode === 'keystore' ? 'con Keystore' : 'Release autogenerado'})...`);
       try {
           const baseName = exportFileName.trim() || 'mi_juego_2d';
+          const filteredData = applyExportDimensionFilter(baseData, { dimensionMode });
+          const threeVendorScript = await fetchLocalThreeVendorScript(filteredData);
           const cordovaZipBlob = await generateGameAPKPackage(baseData, (msg) => {
               setOptimizationProgress(msg);
-          }, { dimensionMode, signing });
-          setOptimizationProgress(`Enviando proyecto firmado (${suffix.toUpperCase()}) al servidor de compilación APK...`);
+          }, {
+              dimensionMode,
+              signing,
+              wwwOnly: isStandaloneFastPath,
+              useLocalThreeVendor: Boolean(threeVendorScript),
+              threeVendorScript,
+          });
+          setOptimizationProgress(`Generando APK binario firmado (${suffix.toUpperCase()}) con firma JAR v1 + APK v2...`);
           const cordovaZipBase64 = await blobToBase64(cordovaZipBlob);
-          const filteredData = applyExportDimensionFilter(baseData, { dimensionMode });
-          const filteredHtml = generateGameHTML(filteredData, true, { dimensionMode });
 
           const response = await fetch('/api/build-apk', {
               method: 'POST',
@@ -537,24 +749,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
                   buildType: signing.buildType,
                   signing,
                   cordovaZipBase64,
-                  html: filteredHtml,
-                  projectJson: JSON.stringify(filteredData),
               }),
           });
 
           if (!response.ok) {
               const errData = await response.json().catch(() => ({}));
-              if (response.status === 422 && errData?.error === 'NO_APK_BUILD_SERVER') {
-                  setCustomAlert({
-                      title: 'Servidor de Compilación APK Requerido',
-                      message:
-                        `${errData.message}\n\nCómo compilar directo a .apk (${suffix}):\n1. Descarga "Servidor APK (.mjs)" aquí abajo.\n2. En tu PC/VPS con Android SDK + JDK (keytool) + Cordova instalados, ejecuta:\n   node apk-build-server.mjs\n3. Pega la URL (ej. http://localhost:4050) arriba, pulsa "Probar Conexión" y vuelve a pulsar "Compilar APK".`,
-                  });
-                  return;
-              }
               setCustomAlert({
                   title: `Error al Compilar APK ${suffix.toUpperCase()}`,
-                  message: errData?.message || `El servidor devolvió estado HTTP ${response.status}.`,
+                  message: errData?.message || `El compilador devolvió estado HTTP ${response.status}.`,
               });
               return;
           }
@@ -586,9 +788,16 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
       setIsOptimizing(true);
       setOptimizationProgress(`Empaquetando proyecto Cordova APK (${signing.buildType?.toUpperCase()}) con Keystore y build.json...`);
       try {
+          const filteredData = applyExportDimensionFilter(baseData, { dimensionMode });
+          const threeVendorScript = await fetchLocalThreeVendorScript(filteredData);
           const zipBlob = await generateGameAPKPackage(baseData, (msg) => {
               setOptimizationProgress(msg);
-          }, { dimensionMode, signing });
+          }, {
+              dimensionMode,
+              signing,
+              useLocalThreeVendor: Boolean(threeVendorScript),
+              threeVendorScript,
+          });
           const baseName = exportFileName.trim() || 'mi_juego_2d';
           const finalFilename = baseName.toLowerCase().endsWith('.zip') ? baseName : `${baseName}_apk_cordova_${signing.buildType || 'debug'}.zip`;
 
@@ -600,6 +809,115 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
               message: 'Ocurrió un fallo al empaquetar los archivos fuente Cordova.'
           });
       } finally {
+          setIsOptimizing(false);
+      }
+  };
+
+  const handleExportWindowsZip = async () => {
+      const baseData = getEffectiveProjectData();
+      if (!baseData) return;
+      setIsBuildingWinExe(false);
+      setIsOptimizing(true);
+      setOptimizationProgress('Empaquetando juego Windows Electron (.zip listo para .exe)...');
+      try {
+          const filtered = applyExportDimensionFilter(baseData, { dimensionMode });
+          const threeVendorScript = await fetchLocalThreeVendorScript(filtered);
+          const appName = baseData.name || baseData.scenes?.[0]?.name || exportFileName.trim() || 'Return Game';
+          const zipBlob = await generateWindowsElectronZIP(baseData, (msg) => {
+              setOptimizationProgress(msg);
+          }, {
+              dimensionMode,
+              skipStartScreen,
+              useLocalThreeVendor: Boolean(threeVendorScript),
+              threeVendorScript,
+              windowsConfig: {
+                  appName,
+                  version: winVersion.trim() || '1.0.0',
+                  fullscreen: winFullscreen,
+                  resizable: true,
+                  width: baseData.gameWidth || 1280,
+                  height: baseData.gameHeight || 720,
+              },
+          });
+          const baseName = exportFileName.trim() || 'mi_juego';
+          const finalFilename = `${baseName}_windows_electron.zip`;
+          triggerStandardDownload(zipBlob, finalFilename, 'application/zip');
+      } catch (err) {
+          console.error('Error al exportar Windows Electron ZIP:', err);
+          setCustomAlert({
+              title: 'Error de Exportación Windows',
+              message: 'No se pudo generar el paquete Windows Electron (.zip). Inténtalo nuevamente.',
+          });
+      } finally {
+          setIsOptimizing(false);
+      }
+  };
+
+  const handleCompileDirectWinExe = async () => {
+      const baseData = getEffectiveProjectData();
+      if (!baseData) return;
+      setIsBuildingWinExe(true);
+      setIsOptimizing(true);
+      setOptimizationProgress('Generando paquete Electron y compilando ejecutable Windows (.exe)...');
+      try {
+          const filtered = applyExportDimensionFilter(baseData, { dimensionMode });
+          const threeVendorScript = await fetchLocalThreeVendorScript(filtered);
+          const appName = baseData.name || baseData.scenes?.[0]?.name || exportFileName.trim() || 'Return Game';
+          const zipBlob = await generateWindowsElectronZIP(baseData, (msg) => {
+              setOptimizationProgress(msg);
+          }, {
+              dimensionMode,
+              skipStartScreen,
+              useLocalThreeVendor: Boolean(threeVendorScript),
+              threeVendorScript,
+              windowsConfig: {
+                  appName,
+                  version: winVersion.trim() || '1.0.0',
+                  fullscreen: winFullscreen,
+                  resizable: true,
+                  width: baseData.gameWidth || 1280,
+                  height: baseData.gameHeight || 720,
+              },
+          });
+          const electronZipBase64 = await blobToBase64(zipBlob);
+          const baseName = exportFileName.trim() || 'mi_juego';
+          setOptimizationProgress(`Compilando binario Windows ${winTarget === 'nsis' ? 'Instalador Setup' : 'Portable'} (.exe)...`);
+
+          const response = await fetch('/api/build-win-exe', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  fileName: baseName,
+                  target: winTarget,
+                  serverUrl: winServerUrl.trim() || undefined,
+                  electronZipBase64,
+              }),
+          });
+
+          if (!response.ok) {
+              const errData = await response.json().catch(() => ({}));
+              setCustomConfirm({
+                  title: 'Compilación Directa .EXE No Disponible Aquí',
+                  message: `${errData?.message || 'Este servidor no tiene Electron-Builder para compilar .exe directo.'}\n\n¿Quieres descargar ahora el paquete Windows Electron (.zip) ya compilado con icon.ico, Three.js offline y COMPILAR_ELECTRON_EXE.bat de 1 clic?`,
+                  confirmText: 'Descargar .ZIP Electron',
+                  cancelText: 'Cerrar',
+                  onConfirm: () => {
+                      triggerStandardDownload(zipBlob, `${baseName}_windows_electron.zip`, 'application/zip');
+                  },
+              });
+              return;
+          }
+
+          const exeBlob = await response.blob();
+          triggerStandardDownload(exeBlob, `${baseName}-${winTarget}.exe`, 'application/vnd.microsoft.portable-executable');
+      } catch (err: any) {
+          console.error('Error compilando Windows .exe directo:', err);
+          setCustomAlert({
+              title: 'Error de Compilación .EXE',
+              message: err?.message || 'No se pudo completar la compilación del ejecutable Windows.',
+          });
+      } finally {
+          setIsBuildingWinExe(false);
           setIsOptimizing(false);
       }
   };
@@ -643,6 +961,15 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
     setApkServerUrl(val);
     try {
       localStorage.setItem(APK_SERVER_URL_STORAGE_KEY, val);
+    } catch {
+      // ignore storage quota issues
+    }
+  };
+
+  const handleWinServerUrlChange = (val: string) => {
+    setWinServerUrl(val);
+    try {
+      localStorage.setItem(WIN_SERVER_URL_STORAGE_KEY, val);
     } catch {
       // ignore storage quota issues
     }
@@ -712,15 +1039,19 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
             <h3 className="text-lg font-black text-white uppercase tracking-wider mb-2">
               {isBuildingApk
                 ? `Compilando Android APK ${apkBuildType === 'release' ? 'Release Firmado' : 'Debug'} (.apk)`
-                : 'Comprimiendo y Optimizando Recursos'}
+                : isBuildingWinExe
+                  ? 'Compilando Windows Electron (.exe)'
+                  : 'Comprimiendo y Optimizando Recursos'}
             </h3>
             <p className="text-xs text-gray-400 font-mono max-w-md bg-gray-900/50 px-4 py-3 rounded-lg border border-gray-800">
               {optimizationProgress}
             </p>
             <span className="text-[10px] text-gray-500 mt-4 leading-relaxed max-w-sm">
               {isBuildingApk
-                ? `Conectando con el servidor de compilación Android para generar el binario .apk firmado con Keystore (${apkBuildType}).`
-                : 'Reduciendo imágenes pesadas y pistas de audio para minimizar el peso del juego de MB a KB para una carga ultra rápida.'}
+                ? `Generando y firmando el binario Android .apk directamente (JAR v1 + APK v2, modo ${apkBuildType}).`
+                : isBuildingWinExe
+                  ? 'Empaquetando aplicación Electron con protocolo app://, icon.ico y Three.js offline para Windows x64.'
+                  : 'Reduciendo imágenes, minificando scripts y empaquetando assets para carga ultra rápida.'}
             </span>
           </div>
         )}
@@ -900,34 +1231,35 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
                         </div>
                     )}
 
-                    {/* Direct APK Debug / Release Keystore Build Server Section */}
+                    {/* Direct Signed APK Section (No External Compile Server Required) */}
                     <div className="p-4 rounded-xl bg-gradient-to-br from-indigo-950/35 to-gray-900/60 border border-indigo-500/30 space-y-3.5">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                             <div>
                                 <h4 className="font-bold text-white tracking-tight text-sm flex items-center gap-2">
-                                    <span>📱</span> Compilación Android APK con Keystore (.apk directo)
+                                    <span>📱</span> Exportar APK Firmado (.apk directo sin servidor)
                                 </h4>
                                 <p className="text-[11px] text-gray-400 mt-0.5">
-                                    Compila en modo <strong className="text-gray-200">Debug</strong> o <strong className="text-emerald-300">Release Firmado</strong> usando tu archivo <code className="text-indigo-300">.keystore</code> / <code className="text-indigo-300">.jks</code> o autogenerándolo con <code className="text-indigo-300">keytool</code>.
+                                    Genera tu binario <code className="text-indigo-300">.apk</code> firmado (JAR v1 + APK v2) al instante en modo <strong className="text-gray-200">Debug Predeterminado</strong> o <strong className="text-emerald-300">Firmado con Archivos / Keystore</strong>.
                                 </p>
                             </div>
                             <span
                                 data-testid="apk-server-badge"
                                 className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded border ${
-                                    apkServerStatus === 'connected' || apkServerStatus === 'local'
+                                    apkServerStatus === 'connected' || apkServerStatus === 'local' || apkServerStatus === 'standalone'
                                         ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
                                         : apkServerStatus === 'checking'
                                             ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
                                             : apkServerStatus === 'offline'
                                                 ? 'bg-red-500/15 border-red-500/40 text-red-300'
-                                                : 'bg-gray-800 border-gray-700 text-gray-400'
+                                                : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
                                 }`}
                             >
                                 {apkServerStatus === 'connected' && 'Servidor Conectado'}
                                 {apkServerStatus === 'local' && 'SDK Local Listo'}
+                                {apkServerStatus === 'standalone' && 'Sin Servidor · Listo'}
                                 {apkServerStatus === 'checking' && 'Verificando...'}
-                                {apkServerStatus === 'offline' && 'Sin Conexión'}
-                                {(apkServerStatus === 'none' || apkServerStatus === 'idle') && 'Servidor Requerido'}
+                                {apkServerStatus === 'offline' && 'Remoto Sin Conexión'}
+                                {(apkServerStatus === 'none' || apkServerStatus === 'idle') && 'Sin Servidor · Listo'}
                             </span>
                         </div>
 
@@ -943,7 +1275,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
                                         : 'bg-[#0c0c0e] border-gray-800 text-gray-300 hover:border-gray-700'
                                 }`}
                             >
-                                Debug (Pruebas)
+                                Debug Predeterminado
                             </button>
                             <button
                                 type="button"
@@ -955,7 +1287,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
                                         : 'bg-[#0c0c0e] border-gray-800 text-gray-300 hover:border-gray-700'
                                 }`}
                             >
-                                Release (Firmado con Keystore)
+                                Firmar Release (Archivos / Keystore)
                             </button>
                         </div>
 
@@ -999,153 +1331,211 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
                             </div>
                         </div>
 
-                        {/* Release Keystore Signing Config */}
+                        {/* Release Signing Config: Archivos (Cert+Key), Keystore (.keystore/.p12), o Autogenerado */}
                         {apkBuildType === 'release' && (
                             <div data-testid="apk-keystore-panel" className="p-3 rounded-lg bg-[#0c0e14] border border-emerald-500/30 space-y-3">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                     <span className="text-[11px] font-bold text-emerald-300 uppercase tracking-wide">
-                                        Firma Digital Keystore
+                                        Modo de Firma Digital
                                     </span>
-                                    <div className="flex items-center gap-1 bg-[#141722] p-0.5 rounded border border-gray-800">
+                                    <div className="flex flex-wrap items-center gap-1 bg-[#141722] p-0.5 rounded border border-gray-800">
                                         <button
                                             type="button"
-                                            data-testid="keystore-mode-generate"
-                                            onClick={() => setKeystoreMode('generate')}
+                                            data-testid="signing-mode-files"
+                                            onClick={() => setReleaseSigningMode('files')}
                                             className={`px-2.5 py-1 rounded text-[10px] font-bold transition-colors ${
-                                                keystoreMode === 'generate' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
+                                                releaseSigningMode === 'files' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
                                             }`}
                                         >
-                                            Autogenerar (keytool)
+                                            Archivos (Cert + Clave)
                                         </button>
                                         <button
                                             type="button"
                                             data-testid="keystore-mode-upload"
-                                            onClick={() => setKeystoreMode('upload')}
+                                            onClick={() => setReleaseSigningMode('keystore')}
                                             className={`px-2.5 py-1 rounded text-[10px] font-bold transition-colors ${
-                                                keystoreMode === 'upload' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
+                                                releaseSigningMode === 'keystore' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
                                             }`}
                                         >
-                                            Subir .keystore / .jks
+                                            .keystore / .p12
+                                        </button>
+                                        <button
+                                            type="button"
+                                            data-testid="keystore-mode-generate"
+                                            onClick={() => setReleaseSigningMode('generate')}
+                                            className={`px-2.5 py-1 rounded text-[10px] font-bold transition-colors ${
+                                                releaseSigningMode === 'generate' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
+                                            }`}
+                                        >
+                                            Autogenerar
                                         </button>
                                     </div>
                                 </div>
 
-                                {keystoreMode === 'upload' ? (
-                                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                                        <label className="px-3 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 rounded-lg text-xs font-bold text-emerald-200 cursor-pointer text-center shrink-0">
-                                            Seleccionar archivo Keystore
-                                            <input
-                                                type="file"
-                                                accept=".keystore,.jks,.bks,.p12"
-                                                onChange={handleKeystoreFileUpload}
-                                                className="hidden"
-                                            />
-                                        </label>
-                                        <span className="text-[11px] text-gray-300 font-mono truncate">
-                                            {keystoreBase64
-                                                ? `${keystoreFileName} (${Math.round((keystoreBase64.length * 3) / 4 / 1024)} KB cargados)`
-                                                : 'Ningún archivo .keystore seleccionado'}
-                                        </span>
-                                    </div>
-                                ) : (
-                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                                        <div>
-                                            <label className="text-[10px] text-gray-400 block mb-1">Nombre / Autor (CN)</label>
-                                            <input
-                                                type="text"
-                                                value={dnCommonName}
-                                                onChange={(e) => setDnCommonName(e.target.value)}
-                                                className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 outline-none"
-                                            />
+                                {releaseSigningMode === 'files' && (
+                                    <div className="space-y-2.5">
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                            <div className="flex flex-col gap-1.5 bg-[#12151f] p-2.5 rounded-lg border border-gray-800">
+                                                <label className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 rounded text-[11px] font-bold text-emerald-200 cursor-pointer text-center">
+                                                    Subir Certificado (.pem / .crt / .cer / .der)
+                                                    <input
+                                                        type="file"
+                                                        data-testid="apk-cert-file-input"
+                                                        accept=".pem,.crt,.cer,.der"
+                                                        onChange={handleCertFileUpload}
+                                                        className="hidden"
+                                                    />
+                                                </label>
+                                                <span className="text-[10px] text-gray-300 font-mono truncate text-center">
+                                                    {certBase64
+                                                        ? `✓ ${certFileName}`
+                                                        : 'Ningún certificado cargado'}
+                                                </span>
+                                            </div>
+                                            <div className="flex flex-col gap-1.5 bg-[#12151f] p-2.5 rounded-lg border border-gray-800">
+                                                <label className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 rounded text-[11px] font-bold text-emerald-200 cursor-pointer text-center">
+                                                    Subir Clave Privada (.pem / .key / .pk8)
+                                                    <input
+                                                        type="file"
+                                                        data-testid="apk-key-file-input"
+                                                        accept=".pem,.key,.pk8"
+                                                        onChange={handlePrivateKeyFileUpload}
+                                                        className="hidden"
+                                                    />
+                                                </label>
+                                                <span className="text-[10px] text-gray-300 font-mono truncate text-center">
+                                                    {privateKeyBase64
+                                                        ? `✓ ${privateKeyFileName}`
+                                                        : 'Ninguna clave cargada'}
+                                                </span>
+                                            </div>
                                         </div>
                                         <div>
-                                            <label className="text-[10px] text-gray-400 block mb-1">Organización (O)</label>
+                                            <label className="text-[10px] text-gray-400 block mb-1">Contraseña de la Clave Privada (opcional si no está cifrada)</label>
                                             <input
-                                                type="text"
-                                                value={dnOrganization}
-                                                onChange={(e) => setDnOrganization(e.target.value)}
-                                                className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 outline-none"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="text-[10px] text-gray-400 block mb-1">País (C, 2 letras)</label>
-                                            <input
-                                                type="text"
-                                                maxLength={2}
-                                                value={dnCountry}
-                                                onChange={(e) => setDnCountry(e.target.value.toUpperCase())}
-                                                className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono uppercase outline-none"
+                                                type="password"
+                                                data-testid="apk-keypass-files-input"
+                                                value={privateKeyPassword}
+                                                onChange={(e) => setPrivateKeyPassword(e.target.value)}
+                                                placeholder="Dejar vacío si tu clave no tiene contraseña"
+                                                className="w-full bg-[#131620] border border-gray-700 rounded px-2.5 py-1.5 text-xs text-gray-200 font-mono outline-none"
                                             />
                                         </div>
                                     </div>
                                 )}
 
-                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                                    <div>
-                                        <label className="text-[10px] text-gray-400 block mb-1">Alias</label>
-                                        <input
-                                            type="text"
-                                            data-testid="keystore-alias-input"
-                                            value={keystoreAlias}
-                                            onChange={(e) => setKeystoreAlias(e.target.value)}
-                                            className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono outline-none"
-                                        />
+                                {releaseSigningMode === 'keystore' && (
+                                    <div className="space-y-2.5">
+                                        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                                            <label className="px-3 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 rounded-lg text-xs font-bold text-emerald-200 cursor-pointer text-center shrink-0">
+                                                Seleccionar .keystore / .p12
+                                                <input
+                                                    type="file"
+                                                    accept=".keystore,.p12,.pfx,.jks"
+                                                    onChange={handleKeystoreFileUpload}
+                                                    className="hidden"
+                                                />
+                                            </label>
+                                            <span className="text-[11px] text-gray-300 font-mono truncate">
+                                                {keystoreBase64
+                                                    ? `${keystoreFileName} (${Math.round((keystoreBase64.length * 3) / 4 / 1024)} KB cargados)`
+                                                    : 'Ningún archivo .keystore / .p12 seleccionado'}
+                                            </span>
+                                        </div>
+                                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                            <div>
+                                                <label className="text-[10px] text-gray-400 block mb-1">Alias</label>
+                                                <input
+                                                    type="text"
+                                                    data-testid="keystore-alias-input"
+                                                    value={keystoreAlias}
+                                                    onChange={(e) => setKeystoreAlias(e.target.value)}
+                                                    className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono outline-none"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] text-gray-400 block mb-1">Store Password</label>
+                                                <input
+                                                    type="password"
+                                                    data-testid="keystore-storepass-input"
+                                                    value={storePassword}
+                                                    onChange={(e) => setStorePassword(e.target.value)}
+                                                    className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono outline-none"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] text-gray-400 block mb-1">Key Password</label>
+                                                <input
+                                                    type="password"
+                                                    data-testid="keystore-keypass-input"
+                                                    value={keyPassword}
+                                                    onChange={(e) => setKeyPassword(e.target.value)}
+                                                    className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono outline-none"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] text-gray-400 block mb-1">Tipo</label>
+                                                <select
+                                                    value={keystoreType}
+                                                    onChange={(e) => setKeystoreType(e.target.value as 'pkcs12' | 'jks')}
+                                                    className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 outline-none"
+                                                >
+                                                    <option value="pkcs12">PKCS12 (.p12/.keystore)</option>
+                                                    <option value="jks">JKS</option>
+                                                </select>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div>
-                                        <label className="text-[10px] text-gray-400 block mb-1">Store Password</label>
-                                        <input
-                                            type="password"
-                                            data-testid="keystore-storepass-input"
-                                            value={storePassword}
-                                            onChange={(e) => setStorePassword(e.target.value)}
-                                            className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono outline-none"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="text-[10px] text-gray-400 block mb-1">Key Password</label>
-                                        <input
-                                            type="password"
-                                            data-testid="keystore-keypass-input"
-                                            value={keyPassword}
-                                            onChange={(e) => setKeyPassword(e.target.value)}
-                                            className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono outline-none"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="text-[10px] text-gray-400 block mb-1">Tipo</label>
-                                        <select
-                                            value={keystoreType}
-                                            onChange={(e) => setKeystoreType(e.target.value as 'pkcs12' | 'jks')}
-                                            className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 outline-none"
+                                )}
+
+                                {releaseSigningMode === 'generate' && (
+                                    <div className="space-y-2.5">
+                                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                            <div>
+                                                <label className="text-[10px] text-gray-400 block mb-1">Nombre / Autor (CN)</label>
+                                                <input
+                                                    type="text"
+                                                    value={dnCommonName}
+                                                    onChange={(e) => setDnCommonName(e.target.value)}
+                                                    className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 outline-none"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] text-gray-400 block mb-1">Organización (O)</label>
+                                                <input
+                                                    type="text"
+                                                    value={dnOrganization}
+                                                    onChange={(e) => setDnOrganization(e.target.value)}
+                                                    className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 outline-none"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] text-gray-400 block mb-1">País (C, 2 letras)</label>
+                                                <input
+                                                    type="text"
+                                                    maxLength={2}
+                                                    value={dnCountry}
+                                                    onChange={(e) => setDnCountry(e.target.value.toUpperCase())}
+                                                    className="w-full bg-[#131620] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono uppercase outline-none"
+                                                />
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            disabled={isGeneratingSigningFiles}
+                                            onClick={handleGenerateAndDownloadSigningFiles}
+                                            className="w-full py-1.5 px-3 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 rounded-lg text-[11px] font-bold text-emerald-200 transition-colors"
                                         >
-                                            <option value="pkcs12">PKCS12 (.keystore)</option>
-                                            <option value="jks">JKS (.jks)</option>
-                                        </select>
+                                            {isGeneratingSigningFiles
+                                                ? 'Generando certificado RSA-2048...'
+                                                : 'Generar, Cargar y Descargar Certificado + Clave (.pem / .key)'}
+                                        </button>
                                     </div>
-                                </div>
+                                )}
                             </div>
                         )}
 
-                        <div className="flex flex-col sm:flex-row gap-2">
-                            <input
-                                type="url"
-                                data-testid="apk-server-url-input"
-                                value={apkServerUrl}
-                                onChange={(e) => handleApkServerUrlChange(e.target.value)}
-                                placeholder="http://localhost:4050  o  https://tu-servidor-apk.ejemplo.com"
-                                className="bg-[#0c0c0e] border border-gray-700 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs text-gray-200 outline-none flex-grow font-mono"
-                            />
-                            <button
-                                type="button"
-                                data-testid="apk-check-btn"
-                                onClick={() => checkApkServerConnection()}
-                                className="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-bold uppercase tracking-wider px-3.5 py-2 rounded-lg border border-gray-700 transition-colors shrink-0"
-                            >
-                                Probar Conexión
-                            </button>
-                        </div>
-
-                        <p data-testid="apk-status-message" className="text-[11px] text-gray-300 leading-relaxed">
+                        <p data-testid="apk-status-message" className="text-[11px] text-emerald-300/90 leading-relaxed">
                             {apkStatusMessage}
                         </p>
 
@@ -1156,24 +1546,184 @@ export const ExportModal: React.FC<ExportModalProps> = ({ onClose, projectData, 
                                 onClick={handleCompileDirectAPK}
                                 className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold uppercase tracking-wider px-4 py-2 rounded-lg transition-all shadow-lg hover:shadow-indigo-600/20"
                             >
-                                {apkBuildType === 'release' ? 'Compilar APK Release Firmado (.apk)' : 'Compilar APK Debug (.apk)'}
+                                {apkBuildType === 'release'
+                                    ? 'Exportar APK Release Firmado (.apk)'
+                                    : 'Exportar APK Debug Predeterminado (.apk)'}
                             </button>
-                            <a
-                                href="/api/apk-server/companion-script"
-                                download="apk-build-server.mjs"
-                                className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 text-xs font-bold uppercase tracking-wider px-3 py-2 rounded-lg transition-colors border border-emerald-500/30 inline-flex items-center"
-                            >
-                                Descargar Servidor APK (.mjs)
-                            </a>
                             <button
                                 type="button"
                                 data-testid="apk-export-source-zip-btn"
                                 onClick={handleExportAPKSourceZip}
                                 className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-bold uppercase tracking-wider px-3 py-2 rounded-lg transition-colors border border-gray-700"
                             >
-                                Respaldo Cordova (.zip)
+                                Proyecto Cordova (.zip)
                             </button>
                         </div>
+
+                        <details className="pt-1">
+                            <summary className="text-[10px] font-bold text-gray-400 hover:text-gray-200 uppercase tracking-wider cursor-pointer select-none">
+                                Opciones avanzadas: Servidor Gradle/Cordova remoto (opcional)
+                            </summary>
+                            <div className="mt-2.5 space-y-2 p-2.5 rounded-lg bg-[#0c0c0e]/80 border border-gray-800">
+                                <div className="flex flex-col sm:flex-row gap-2">
+                                    <input
+                                        type="url"
+                                        data-testid="apk-server-url-input"
+                                        value={apkServerUrl}
+                                        onChange={(e) => handleApkServerUrlChange(e.target.value)}
+                                        placeholder="Opcional: http://localhost:4050"
+                                        className="bg-[#0c0c0e] border border-gray-700 focus:border-indigo-500 rounded-lg px-3 py-1.5 text-xs text-gray-200 outline-none flex-grow font-mono"
+                                    />
+                                    <button
+                                        type="button"
+                                        data-testid="apk-check-btn"
+                                        onClick={() => checkApkServerConnection()}
+                                        className="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded-lg border border-gray-700 transition-colors shrink-0"
+                                    >
+                                        Probar Conexión
+                                    </button>
+                                </div>
+                                <a
+                                    href="/api/apk-server/companion-script"
+                                    download="apk-build-server.mjs"
+                                    className="bg-emerald-600/15 hover:bg-emerald-600/25 text-emerald-300 text-[10px] font-bold uppercase tracking-wider px-2.5 py-1.5 rounded border border-emerald-500/30 inline-flex items-center"
+                                >
+                                    Descargar Servidor Cordova Opcional (.mjs)
+                                </a>
+                            </div>
+                        </details>
+                    </div>
+
+                    {/* Windows Desktop Export Section (.ZIP + Electron .EXE) */}
+                    <div data-testid="win-export-card" className="p-4 rounded-xl bg-gradient-to-br from-sky-950/35 to-gray-900/60 border border-sky-500/30 space-y-3.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                                <h4 className="font-bold text-white tracking-tight text-sm flex items-center gap-2">
+                                    <span>🖥️</span> Exportar a Windows (.zip y Electron .exe)
+                                </h4>
+                                <p className="text-[11px] text-gray-400 mt-0.5">
+                                    Paquete Electron preconfigurado sin errores de CORS ni firma (<code className="text-sky-300">icon.ico</code> multi-resolución, protocolo <code className="text-sky-300">app://</code> y scripts 1-clic para <code className="text-sky-300">.exe</code>).
+                                </p>
+                            </div>
+                            <span
+                                data-testid="win-server-badge"
+                                className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded border ${
+                                    winServerStatus === 'remote' || winServerStatus === 'local' || winServerStatus === 'package-only' || winServerStatus === 'idle'
+                                        ? 'bg-sky-500/15 border-sky-500/40 text-sky-300'
+                                        : winServerStatus === 'checking'
+                                            ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                                            : 'bg-red-500/15 border-red-500/40 text-red-300'
+                                }`}
+                            >
+                                {winServerStatus === 'remote' && 'Servidor EXE Conectado'}
+                                {winServerStatus === 'local' && 'Electron Local Listo'}
+                                {(winServerStatus === 'package-only' || winServerStatus === 'idle') && 'Electron ZIP · Listo'}
+                                {winServerStatus === 'checking' && 'Verificando...'}
+                                {winServerStatus === 'offline' && 'Remoto Sin Conexión'}
+                            </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div>
+                                <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">
+                                    Pantalla en Windows
+                                </label>
+                                <button
+                                    type="button"
+                                    data-testid="win-fullscreen-toggle"
+                                    onClick={() => setWinFullscreen((p) => !p)}
+                                    className={`w-full px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
+                                        winFullscreen
+                                            ? 'bg-sky-600 border-sky-500 text-white'
+                                            : 'bg-[#0c0c0e] border-gray-700 text-gray-300 hover:border-gray-600'
+                                    }`}
+                                >
+                                    {winFullscreen ? 'Pantalla Completa (F11)' : 'Modo Ventana'}
+                                </button>
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">
+                                    Formato .EXE Directo
+                                </label>
+                                <select
+                                    data-testid="win-target-select"
+                                    value={winTarget}
+                                    onChange={(e) => setWinTarget(e.target.value as 'portable' | 'nsis')}
+                                    className="w-full bg-[#0c0c0e] border border-gray-700 focus:border-sky-500 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 outline-none"
+                                >
+                                    <option value="portable">Portable (.exe único)</option>
+                                    <option value="nsis">Instalador Setup (.exe)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">
+                                    Versión Windows
+                                </label>
+                                <input
+                                    type="text"
+                                    value={winVersion}
+                                    onChange={(e) => setWinVersion(e.target.value)}
+                                    placeholder="1.0.0"
+                                    className="w-full bg-[#0c0c0e] border border-gray-700 focus:border-sky-500 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 font-mono outline-none"
+                                />
+                            </div>
+                        </div>
+
+                        <p data-testid="win-status-message" className="text-[11px] text-sky-300/90 leading-relaxed">
+                            {winStatusMessage}
+                        </p>
+
+                        <div className="flex flex-wrap gap-2 pt-1">
+                            <button
+                                type="button"
+                                data-testid="win-export-zip-btn"
+                                onClick={handleExportWindowsZip}
+                                className="bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold uppercase tracking-wider px-4 py-2 rounded-lg transition-all shadow-lg hover:shadow-sky-600/20"
+                            >
+                                Exportar Windows Electron (.zip listo para .exe)
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="win-compile-exe-btn"
+                                onClick={handleCompileDirectWinExe}
+                                className="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-bold uppercase tracking-wider px-3 py-2 rounded-lg transition-colors border border-gray-700"
+                            >
+                                Compilar .exe Directo
+                            </button>
+                        </div>
+
+                        <details className="pt-1">
+                            <summary className="text-[10px] font-bold text-gray-400 hover:text-gray-200 uppercase tracking-wider cursor-pointer select-none">
+                                Opciones avanzadas: Servidor Electron Builder Windows (.exe remoto opcional)
+                            </summary>
+                            <div className="mt-2.5 space-y-2 p-2.5 rounded-lg bg-[#0c0c0e]/80 border border-gray-800">
+                                <div className="flex flex-col sm:flex-row gap-2">
+                                    <input
+                                        type="url"
+                                        data-testid="win-server-url-input"
+                                        value={winServerUrl}
+                                        onChange={(e) => handleWinServerUrlChange(e.target.value)}
+                                        placeholder="Opcional: http://localhost:4060"
+                                        className="bg-[#0c0c0e] border border-gray-700 focus:border-sky-500 rounded-lg px-3 py-1.5 text-xs text-gray-200 outline-none flex-grow font-mono"
+                                    />
+                                    <button
+                                        type="button"
+                                        data-testid="win-check-btn"
+                                        onClick={() => checkWinServerConnection()}
+                                        className="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded-lg border border-gray-700 transition-colors shrink-0"
+                                    >
+                                        Probar Conexión
+                                    </button>
+                                </div>
+                                <a
+                                    href="/api/win-server/companion-script"
+                                    download="win-exe-build-server.mjs"
+                                    className="bg-sky-600/15 hover:bg-sky-600/25 text-sky-300 text-[10px] font-bold uppercase tracking-wider px-2.5 py-1.5 rounded border border-sky-500/30 inline-flex items-center"
+                                >
+                                    Descargar Servidor Compilador .EXE para Windows (.mjs)
+                                </a>
+                            </div>
+                        </details>
                     </div>
 
                     <p className="text-xs text-gray-400 leading-relaxed">Otras plataformas de exportación web y datos:</p>

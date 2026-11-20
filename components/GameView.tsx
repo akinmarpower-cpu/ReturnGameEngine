@@ -481,6 +481,9 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
     fogColor?: string;
     fogDensity?: number;
     skyboxImageUrl?: string;
+    movementEnabled?: boolean;
+    rightStickEnabled?: boolean;
+    rightStickSensitivity?: number;
     yaw?: number;
     pitch?: number;
     fpPitch?: number;
@@ -492,8 +495,12 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
     fogColor: scene?.fogColor || scene?.backgroundColor || '#111827',
     fogDensity: scene?.fogDensity ?? 0.02,
     skyboxImageUrl: scene?.skyboxImageUrl || '',
+    movementEnabled: scene?.camera3DMovementEnabled !== false,
+    rightStickEnabled: scene?.camera3DRightStickEnabled === true,
+    rightStickSensitivity: scene?.camera3DRightStickSensitivity ?? 2.4,
   });
 
+  const gamepadRightStickRef = useRef<{ rx: number; ry: number }>({ rx: 0, ry: 0 });
   const orbitYawRef = useRef(0);
   const orbitPitchRef = useRef(0.38);
   const orbitFirstPersonPitchRef = useRef(0);
@@ -812,7 +819,7 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
           'SetBackgroundColor', 'SetCameraZoom', 'SetSceneUnlocked', 'SetJoystickEnabled',
           'ShowDialogue', 'ShowConsole', 'PlaySound', 'SetBackgroundMusic', 'PauseBackgroundMusic',
           'ResumeBackgroundMusic', 'StopBackgroundMusic', 'SetBackgroundMusicVolume',
-          'SetCamera3DMode', 'SetCamera3DOffset', 'SetFog3D', 'SetSkybox3D', 'SetQuestState',
+          'SetCamera3DMode', 'SetCamera3DOffset', 'SetCamera3DMovement', 'SetFog3D', 'SetSkybox3D', 'SetQuestState',
           'CreateMatch', 'JoinMatch', 'SendNetworkMessage', 'SetPlayerSkin',
           'CreateObject', 'CreateObject3D', 'GenerateObjectAt'
       ]);
@@ -1257,6 +1264,29 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                 if (targetObj && params?.targetObjectName) {
                     targetObj.followTarget = String(params.targetObjectName);
                     targetObj.followSpeed = Number(params.speed || 100);
+                }
+                break;
+          case 'RunAtSpeed':
+                if (targetObj) {
+                    const runMode = String(params?.runMode || 'active');
+                    const rawSpd = Number(params?.speed ?? (is3DModeRef.current ? 12 : 400));
+                    if (runMode === 'stop' || !Number.isFinite(rawSpd) || rawSpd <= 0) {
+                        (targetObj as any)._customRunSpeed = undefined;
+                        (targetObj as any)._customRunActive = false;
+                        (targetObj as any)._configuredSprintSpeed = undefined;
+                        (targetObj as any)._autoRunSpeed = undefined;
+                    } else if (runMode === 'onSprint') {
+                        (targetObj as any)._configuredSprintSpeed = rawSpd;
+                        (targetObj as any)._autoRunSpeed = undefined;
+                    } else if (runMode === 'autoMove') {
+                        (targetObj as any)._customRunSpeed = rawSpd;
+                        (targetObj as any)._customRunActive = true;
+                        (targetObj as any)._autoRunSpeed = rawSpd;
+                    } else {
+                        (targetObj as any)._customRunSpeed = rawSpd;
+                        (targetObj as any)._customRunActive = true;
+                        (targetObj as any)._autoRunSpeed = undefined;
+                    }
                 }
                 break;
           case 'MoveInDirection':
@@ -1749,6 +1779,9 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                           fogColor: camera3DRuntimeRef.current.fogColor,
                           fogDensity: camera3DRuntimeRef.current.fogDensity,
                           skyboxImageUrl: camera3DRuntimeRef.current.skyboxImageUrl,
+                          movementEnabled: camera3DRuntimeRef.current.movementEnabled,
+                          rightStickEnabled: camera3DRuntimeRef.current.rightStickEnabled,
+                          rightStickSensitivity: camera3DRuntimeRef.current.rightStickSensitivity,
                       } : null,
                       selectedPlayerId: selectedPlayerIdRef.current,
                       joystickEnabled: joystickRuntimeEnabled,
@@ -2317,6 +2350,19 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                       y: params.cy != null && params.cy !== '' ? Number(params.cy) : camera3DRuntimeRef.current.offset.y,
                       z: params.cz != null && params.cz !== '' ? Number(params.cz) : camera3DRuntimeRef.current.offset.z,
                   };
+              }
+              break;
+          case 'SetCamera3DMovement':
+              if (params) {
+                  if (params.enabled !== undefined) {
+                      camera3DRuntimeRef.current.movementEnabled = params.enabled !== false && params.enabled !== 'false';
+                  }
+                  if (params.rightStickEnabled !== undefined) {
+                      camera3DRuntimeRef.current.rightStickEnabled = params.rightStickEnabled === true || params.rightStickEnabled === 'true';
+                  }
+                  if (params.sensitivity !== undefined && params.sensitivity !== '') {
+                      camera3DRuntimeRef.current.rightStickSensitivity = Math.max(0.2, Math.min(10, Number(params.sensitivity) || 2.4));
+                  }
               }
               break;
           case 'LookAtObject3D':
@@ -3199,7 +3245,7 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
     const controls = new OrbitControls(threeCamera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.enabled = (scene.camera3DMode || 'thirdPerson') === 'freeOrbit';
+    controls.enabled = ((scene.camera3DMode || 'thirdPerson') === 'freeOrbit') && (scene.camera3DMovementEnabled !== false);
     threeControlsRef.current = controls;
 
     const resizeObserver = new ResizeObserver((entries) => {
@@ -3296,7 +3342,7 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
         return fBeh?.properties?.mode || scene.camera3DMode || 'thirdPerson';
       };
 
-      if (!draggingRef.current && resolveCam3DModeNow() !== 'freeOrbit') {
+      if (!draggingRef.current && resolveCam3DModeNow() !== 'freeOrbit' && camera3DRuntimeRef.current.movementEnabled !== false) {
         isCameraOrbitingRef.current = true;
         lastOrbitPointerRef.current = { x: e.clientX, y: e.clientY };
         activePointers3DRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -3331,7 +3377,7 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
       const fObjMove = gameObjectsRef.current.find(o => !o.isUI && o.behaviors?.some(b => b.name === 'FollowCamera3D'));
       const fBehMove = fObjMove?.behaviors?.find(b => b.name === 'FollowCamera3D');
       const activeModeMove = camera3DRuntimeRef.current.mode || fBehMove?.properties?.mode || scene.camera3DMode || 'thirdPerson';
-      if (isCameraOrbitingRef.current && activeModeMove !== 'freeOrbit') {
+      if (isCameraOrbitingRef.current && activeModeMove !== 'freeOrbit' && camera3DRuntimeRef.current.movementEnabled !== false) {
         activePointers3DRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
         if (activePointers3DRef.current.size >= 2 && pinchInitialDistanceRef.current && pinchInitialOrbitDistanceRef.current) {
           const pts = Array.from(activePointers3DRef.current.values());
@@ -3410,11 +3456,12 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
         const fObjUp = gameObjectsRef.current.find(o => !o.isUI && o.behaviors?.some(b => b.name === 'FollowCamera3D'));
         const fBehUp = fObjUp?.behaviors?.find(b => b.name === 'FollowCamera3D');
         const modeUp = camera3DRuntimeRef.current.mode || fBehUp?.properties?.mode || scene.camera3DMode || 'thirdPerson';
-        controls.enabled = modeUp === 'freeOrbit';
+        controls.enabled = modeUp === 'freeOrbit' && camera3DRuntimeRef.current.movementEnabled !== false;
       }
     };
 
     const onWheel3D = (e: WheelEvent) => {
+      if (camera3DRuntimeRef.current.movementEnabled === false) return;
       const fObjW = gameObjectsRef.current.find(o => !o.isUI && o.behaviors?.some(b => b.name === 'FollowCamera3D'));
       const fBehW = fObjW?.behaviors?.find(b => b.name === 'FollowCamera3D');
       const modeW = camera3DRuntimeRef.current.mode || fBehW?.properties?.mode || scene.camera3DMode || 'thirdPerson';
@@ -3469,6 +3516,16 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
   }, [is3DScene, scene.id]);
 
   useEffect(() => {
+    camera3DRuntimeRef.current.movementEnabled = scene?.camera3DMovementEnabled !== false;
+    camera3DRuntimeRef.current.rightStickEnabled = scene?.camera3DRightStickEnabled === true;
+    camera3DRuntimeRef.current.rightStickSensitivity = scene?.camera3DRightStickSensitivity ?? 2.4;
+    if (threeControlsRef.current) {
+      const modeNow = camera3DRuntimeRef.current.mode || scene?.camera3DMode || 'thirdPerson';
+      threeControlsRef.current.enabled = (modeNow === 'freeOrbit') && (camera3DRuntimeRef.current.movementEnabled !== false);
+    }
+  }, [scene?.camera3DMovementEnabled, scene?.camera3DRightStickEnabled, scene?.camera3DRightStickSensitivity, scene?.camera3DMode]);
+
+  useEffect(() => {
     resetAllInputs(true);
     setRuntimeBackgroundColor(scene.backgroundColor);
     camera.current.zoom = scene.defaultZoom || 1;
@@ -3487,6 +3544,9 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
       fogColor: scene?.fogColor || scene?.backgroundColor || '#111827',
       fogDensity: scene?.fogDensity ?? 0.02,
       skyboxImageUrl: scene?.skyboxImageUrl || '',
+      movementEnabled: scene?.camera3DMovementEnabled !== false,
+      rightStickEnabled: scene?.camera3DRightStickEnabled === true,
+      rightStickSensitivity: scene?.camera3DRightStickSensitivity ?? 2.4,
     };
     
     let loadedFromPending = false;
@@ -4233,6 +4293,7 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
 
       // Direct Gamepad (Bluetooth & USB) input processing
       const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+      gamepadRightStickRef.current = { rx: 0, ry: 0 };
       if (gamepadMoveLockUntilNeutralRef.current) {
           let anyDirActive = false;
           for (const gp of gamepads) {
@@ -4240,9 +4301,9 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
           }
           if (!anyDirActive) gamepadMoveLockUntilNeutralRef.current = false;
       }
-      if (!gamepadMoveLockUntilNeutralRef.current) {
-          for (const gp of gamepads) {
-              if (!gp) continue;
+      for (const gp of gamepads) {
+          if (!gp) continue;
+          if (!gamepadMoveLockUntilNeutralRef.current) {
               if (gp.buttons) {
                   if (gp.buttons[0]?.pressed) actions.jump = true;
                   if (gp.buttons[1]?.pressed || gp.buttons[2]?.pressed) actions.attack = true;
@@ -4266,6 +4327,17 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                       if (y > 0.18) actions.moveDown = true;
                       if (y < -0.18) actions.moveUp = true;
                   }
+              }
+          }
+          // Pro Controller / Gamepad right stick camera axes (axes[2], axes[3])
+          if (gp.axes && gp.axes.length >= 4) {
+              const rawRx = gp.axes[2] || 0;
+              const rawRy = gp.axes[3] || 0;
+              if (Math.abs(rawRx) > 0.18) {
+                  gamepadRightStickRef.current.rx = ((Math.abs(rawRx) - 0.18) / 0.82) * Math.sign(rawRx);
+              }
+              if (Math.abs(rawRy) > 0.18) {
+                  gamepadRightStickRef.current.ry = ((Math.abs(rawRy) - 0.18) / 0.82) * Math.sign(rawRy);
               }
           }
       }
@@ -4492,6 +4564,128 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
               if (!obj.rotation3D) obj.rotation3D = getObject3DRotation(obj);
 
               if (obj.isUI) {
+                  const nowUiMs = performance.now();
+                  obj.scripts?.forEach(script => {
+                      const scriptId = script.id || script.trigger;
+                      if (script.trigger === 'OnUpdate' || script.trigger === 'Always') {
+                          executeActionsSequential(script.actions, obj, true, deltaTime, false, undefined, `obj-${obj.id}-script-${scriptId}`);
+                      } else if (!['OnStart', 'OnClick', 'OnCollisionWith', 'OnTimerElapsed', 'OnObjectReleased'].includes(script.trigger)) {
+                          const mockCondition: Condition = {
+                              trigger: script.trigger as any,
+                              object: obj.name,
+                              params: script.params,
+                              target: script.params?.targetObjectName
+                          };
+                          if (checkCondition(mockCondition, obj)) {
+                              executeActionsSequential(script.actions, obj, true, deltaTime, false, undefined, `obj-${obj.id}-script-${scriptId}`);
+                          }
+                      }
+                  });
+                  if (obj.tweens && obj.tweens.length > 0) {
+                      obj.tweens = obj.tweens.filter(tween => {
+                          const elapsed = nowUiMs - tween.startTime;
+                          const progress = Math.min(1, elapsed / Math.max(1, tween.duration));
+                          if (tween.type === 'position') {
+                              obj.x = (tween.startX ?? obj.x) + ((tween.endX ?? obj.x) - (tween.startX ?? obj.x)) * progress;
+                              obj.y = (tween.startY ?? obj.y) + ((tween.endY ?? obj.y) - (tween.startY ?? obj.y)) * progress;
+                          } else if (tween.type === 'rotation') {
+                              obj.rotation = (tween.startRotation ?? 0) + ((tween.endRotation ?? 0) - (tween.startRotation ?? 0)) * progress;
+                          } else if (tween.type === 'scale') {
+                              obj.scaleX = (tween.startScaleX ?? 1) + ((tween.endScaleX ?? 1) - (tween.startScaleX ?? 1)) * progress;
+                              obj.scaleY = (tween.startScaleY ?? 1) + ((tween.endScaleY ?? 1) - (tween.startScaleY ?? 1)) * progress;
+                          }
+                          return progress < 1;
+                      });
+                  }
+                  if (obj.oscillation) {
+                      const oscT = (nowUiMs - obj.oscillation.startTime) / 1000;
+                      const oscOff = Math.sin(oscT * obj.oscillation.speed) * obj.oscillation.distance;
+                      if (obj.oscillation.axis === 'x') obj.x = obj.oscillation.initialX + oscOff;
+                      else obj.y = obj.oscillation.initialY + oscOff;
+                  }
+                  const uiPatrol = obj.behaviors?.find(b => b.name === 'Patrol');
+                  if (uiPatrol) {
+                      const { speed = 50, range = 100 } = uiPatrol.properties || {};
+                      if (obj.initialX === undefined) obj.initialX = obj.x;
+                      const cyc = ((nowUiMs / 1000) * speed / Math.max(1, range)) % 2;
+                      const off = cyc < 1 ? cyc * range : (2 - cyc) * range;
+                      obj.x = obj.initialX + off - range / 2;
+                  }
+                  const uiOsc = obj.behaviors?.find(b => b.name === 'Oscillate');
+                  if (uiOsc) {
+                      const { axis = 'x', distance = 100, speed = 2 } = uiOsc.properties || {};
+                      if (obj.initialX === undefined) obj.initialX = obj.x;
+                      if (obj.initialY === undefined) obj.initialY = obj.y;
+                      const off = Math.sin((nowUiMs / 1000) * speed) * distance;
+                      if (axis === 'x') obj.x = obj.initialX + off;
+                      else obj.y = obj.initialY + off;
+                  }
+                  const uiRot = obj.behaviors?.find(b => b.name === 'Rotate');
+                  if (uiRot) {
+                      const { rotationSpeed = 90 } = uiRot.properties || {};
+                      obj.rotation = ((obj.rotation || 0) + rotationSpeed * deltaTime) % 360;
+                      if (obj.rotation < 0) obj.rotation += 360;
+                  }
+                  const uiPulse = obj.behaviors?.find(b => b.name === 'Pulse');
+                  if (uiPulse) {
+                      const { distance = 0.2, speed = 2 } = uiPulse.properties || {};
+                      if (obj.initialScaleX === undefined) obj.initialScaleX = obj.scaleX ?? 1;
+                      if (obj.initialScaleY === undefined) obj.initialScaleY = obj.scaleY ?? 1;
+                      const off = Math.sin((nowUiMs / 1000) * speed) * distance;
+                      obj.scaleX = Math.max(0.01, obj.initialScaleX + off);
+                      obj.scaleY = Math.max(0.01, obj.initialScaleY + off);
+                  }
+                  const uiTweenPath = obj.behaviors?.find(b => b.name === 'TweenPath');
+                  if (uiTweenPath) {
+                      const { speed = 100, loop = true, points: pointsStr = '0,0;100,100' } = uiTweenPath.properties || {};
+                      const pts = String(pointsStr).split(';').map((p: string) => { const [px, py] = p.split(','); return { x: Number(px || 0), y: Number(py || 0) }; });
+                      if (pts.length >= 2) {
+                          if (obj.tweenPathIndex === undefined) obj.tweenPathIndex = 0;
+                          if (obj.tweenPathProgress === undefined) obj.tweenPathProgress = 0;
+                          const p1 = pts[obj.tweenPathIndex % pts.length];
+                          const p2 = pts[(obj.tweenPathIndex + 1) % pts.length];
+                          const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+                          if (dist === 0) obj.tweenPathIndex = (obj.tweenPathIndex + 1) % pts.length;
+                          else {
+                              obj.tweenPathProgress += (speed * deltaTime) / dist;
+                              if (obj.tweenPathProgress >= 1) {
+                                  obj.tweenPathProgress = 0;
+                                  obj.tweenPathIndex += 1;
+                                  if (!loop && obj.tweenPathIndex >= pts.length - 1) {
+                                      obj.tweenPathIndex = Math.max(0, pts.length - 2);
+                                      obj.tweenPathProgress = 1;
+                                  } else {
+                                      obj.tweenPathIndex = obj.tweenPathIndex % pts.length;
+                                  }
+                              }
+                              obj.x = p1.x + (p2.x - p1.x) * obj.tweenPathProgress;
+                              obj.y = p1.y + (p2.y - p1.y) * obj.tweenPathProgress;
+                          }
+                      }
+                  }
+                  if (obj.rotationSpeed) {
+                      obj.rotation = ((obj.rotation || 0) + obj.rotationSpeed * deltaTime) % 360;
+                      if (obj.rotation < 0) obj.rotation += 360;
+                  }
+                  if (obj.scaleOscillation) {
+                      const scOff = Math.sin(((nowUiMs - obj.scaleOscillation.startTime) / 1000) * obj.scaleOscillation.speed) * obj.scaleOscillation.distance;
+                      obj.scaleX = Math.max(0.01, obj.scaleOscillation.initialScaleX + scOff);
+                      obj.scaleY = Math.max(0.01, obj.scaleOscillation.initialScaleY + scOff);
+                  } else {
+                      if (obj.scaleSpeedX) obj.scaleX = Math.max(0.01, (obj.scaleX ?? 1) + obj.scaleSpeedX * deltaTime);
+                      if (obj.scaleSpeedY) obj.scaleY = Math.max(0.01, (obj.scaleY ?? 1) + obj.scaleSpeedY * deltaTime);
+                  }
+                  if (obj.pendingMovements && obj.pendingMovements.length > 0) {
+                      obj.pendingMovements.forEach(move => {
+                          const spd = Number(move.speed || 0);
+                          const dir = (move.direction || '').toLowerCase();
+                          if (dir === 'right') obj.x += spd * deltaTime;
+                          else if (dir === 'left') obj.x -= spd * deltaTime;
+                          else if (dir === 'up') obj.y -= spd * deltaTime;
+                          else if (dir === 'down') obj.y += spd * deltaTime;
+                      });
+                      obj.pendingMovements = [];
+                  }
                   const scoreCounterBehavior = obj.behaviors?.find(b => b.name === 'ScoreCounter');
                   if (scoreCounterBehavior) {
                       const { variableName = 'score', format = 'Score: {value}' } = scoreCounterBehavior.properties;
@@ -4602,7 +4796,14 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                       ? Number(player3DBehav.properties?.speed ?? 6)
                       : Number(platformer?.properties?.speed ?? rpgMovement?.properties?.speed ?? 200) / 36;
                   const sprintMult = player3DBehav ? Number(player3DBehav.properties?.sprintMultiplier ?? 1.6) : 1.7;
-                  const speedVal = actions.run ? baseSpeed * sprintMult : baseSpeed;
+                  let speedVal = baseSpeed;
+                  if ((obj as any)._customRunActive && Number((obj as any)._customRunSpeed) > 0) {
+                      speedVal = Number((obj as any)._customRunSpeed);
+                  } else if (actions.run) {
+                      speedVal = Number((obj as any)._configuredSprintSpeed) > 0
+                          ? Number((obj as any)._configuredSprintSpeed)
+                          : baseSpeed * sprintMult;
+                  }
                   const jumpVal = player3DBehav
                       ? Number(player3DBehav.properties?.jumpForce ?? 8)
                       : Number(platformer?.properties?.jumpForce ?? 380) / 50;
@@ -4623,19 +4824,31 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                       moveZ /= len;
                   }
 
-                  const forwardInput = -moveZ;
-                  const rightInput = moveX;
-                  const yaw = orbitYawRef.current || 0;
-                  const camFwdX = -Math.sin(yaw);
-                  const camFwdZ = -Math.cos(yaw);
-                  const camRightX = Math.cos(yaw);
-                  const camRightZ = -Math.sin(yaw);
-                  let worldMoveX = camRightX * rightInput + camFwdX * forwardInput;
-                  let worldMoveZ = camRightZ * rightInput + camFwdZ * forwardInput;
-                  const mag = Math.hypot(worldMoveX, worldMoveZ);
-                  if (mag > 1) {
-                      worldMoveX /= mag;
-                      worldMoveZ /= mag;
+                  const autoRunSpd = Number((obj as any)._autoRunSpeed || 0);
+                  let worldMoveX = 0;
+                  let worldMoveZ = 0;
+                  let mag = 0;
+                  if (len > 0.01) {
+                      const forwardInput = -moveZ;
+                      const rightInput = moveX;
+                      const yaw = orbitYawRef.current || 0;
+                      const camFwdX = -Math.sin(yaw);
+                      const camFwdZ = -Math.cos(yaw);
+                      const camRightX = Math.cos(yaw);
+                      const camRightZ = -Math.sin(yaw);
+                      worldMoveX = camRightX * rightInput + camFwdX * forwardInput;
+                      worldMoveZ = camRightZ * rightInput + camFwdZ * forwardInput;
+                      mag = Math.hypot(worldMoveX, worldMoveZ);
+                      if (mag > 1) {
+                          worldMoveX /= mag;
+                          worldMoveZ /= mag;
+                      }
+                  } else if (autoRunSpd > 0) {
+                      const facingYaw = obj.rotation3D?.y || 0;
+                      worldMoveX = Math.sin(facingYaw);
+                      worldMoveZ = Math.cos(facingYaw);
+                      mag = 1;
+                      speedVal = autoRunSpd;
                   }
 
                   moveVelX = worldMoveX * speedVal;
@@ -4643,7 +4856,7 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                   obj.vx3D = moveVelX;
                   obj.vz3D = moveVelZ;
 
-                  if (mag > 0.05) {
+                  if (mag > 0.05 && len > 0.01) {
                       obj.rotation3D.y = Math.atan2(worldMoveX, worldMoveZ);
                       obj.direction = worldMoveX < 0 ? 'left' : 'right';
                   }
@@ -4664,6 +4877,13 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                   if (actions.attackAction) {
                       frameAttacks.current.push({ name: obj.name, id: obj.id });
                   }
+              } else if (Number((obj as any)._autoRunSpeed || 0) > 0) {
+                  const autoSpdNonP = Number((obj as any)._autoRunSpeed);
+                  const facingYawNonP = obj.rotation3D?.y || 0;
+                  moveVelX = Math.sin(facingYawNonP) * autoSpdNonP;
+                  moveVelZ = Math.cos(facingYawNonP) * autoSpdNonP;
+                  obj.vx3D = moveVelX;
+                  obj.vz3D = moveVelZ;
               }
 
               // Merge non-permanent loop impulses & decaying burst impulses
@@ -5551,8 +5771,12 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
 
           if (platformer && !hasRPGMovement) {
               let { speed, jumpForce } = platformer.properties;
-              if (activeActions.run) {
-                  speed *= 2;
+              if ((obj as any)._customRunActive && Number((obj as any)._customRunSpeed) > 0) {
+                  speed = Number((obj as any)._customRunSpeed);
+              } else if (activeActions.run) {
+                  speed = Number((obj as any)._configuredSprintSpeed) > 0
+                      ? Number((obj as any)._configuredSprintSpeed)
+                      : speed * 2;
               }
 
               // Check ladder and climber behavior
@@ -5600,9 +5824,12 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                       }
                   } else {
                       const hasHorizInput = (activeActions.moveHorizontalIntensity || 0) !== 0;
+                      const autoRunSpd2D = Number((obj as any)._autoRunSpeed || 0);
                       if (hasHorizInput) {
                           obj.vx = (activeActions.moveHorizontalIntensity || 0) * speed;
                           (obj as any)._customVx = undefined;
+                      } else if (autoRunSpd2D > 0) {
+                          obj.vx = (obj.direction === 'left' ? -1 : 1) * autoRunSpd2D;
                       } else if ((obj as any)._customVx !== undefined) {
                           obj.vx = (obj as any)._customVx;
                       } else {
@@ -5653,8 +5880,12 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
 
           if (rpgMovement) {
               let { speed } = rpgMovement.properties;
-              if (activeActions.run) {
-                  speed *= 2;
+              if ((obj as any)._customRunActive && Number((obj as any)._customRunSpeed) > 0) {
+                  speed = Number((obj as any)._customRunSpeed);
+              } else if (activeActions.run) {
+                  speed = Number((obj as any)._configuredSprintSpeed) > 0
+                      ? Number((obj as any)._configuredSprintSpeed)
+                      : speed * 2;
               }
               
               if (isControllable) {
@@ -5685,11 +5916,15 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                           inputVy /= Math.sqrt(2);
                       }
 
+                      const autoRunSpdRpg = Number((obj as any)._autoRunSpeed || 0);
                       if (inputVx !== 0 || inputVy !== 0) {
                           obj.vx = inputVx;
                           obj.vy = inputVy;
                           (obj as any)._customVx = undefined;
                           (obj as any)._customVy = undefined;
+                      } else if (autoRunSpdRpg > 0) {
+                          obj.vx = (obj.direction === 'left' ? -1 : 1) * autoRunSpdRpg;
+                          obj.vy = 0;
                       } else {
                           if ((obj as any)._customVx !== undefined) {
                               obj.vx = (obj as any)._customVx;
@@ -5725,6 +5960,10 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                   if (Math.abs(obj.rpgKnockbackVx) < 5) obj.rpgKnockbackVx = 0;
                   if (Math.abs(obj.rpgKnockbackVy) < 5) obj.rpgKnockbackVy = 0;
               }
+          }
+
+          if (!platformer && !rpgMovement && Number((obj as any)._autoRunSpeed || 0) > 0) {
+              obj.vx = (obj.direction === 'left' ? -1 : 1) * Number((obj as any)._autoRunSpeed);
           }
 
           const physics = obj.behaviors?.find(b => ['Physics', 'PlatformerCharacter', 'Boss'].includes(b.name || ''));
@@ -6849,9 +7088,29 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
           const follow3DBehav = follow3DBehavObj?.behaviors?.find(b => b.name === 'FollowCamera3D');
 
           const camMode = camera3DRuntimeRef.current.mode || follow3DBehav?.properties?.mode || scene.camera3DMode || 'thirdPerson';
+          const camMovAllowed = camera3DRuntimeRef.current.movementEnabled !== false;
+          const rightStickSens = (camera3DRuntimeRef.current.rightStickSensitivity ?? 2.4) * deltaTime;
+          const { rx: stickRx, ry: stickRy } = gamepadRightStickRef.current;
+          if (camMovAllowed && camera3DRuntimeRef.current.rightStickEnabled && (stickRx !== 0 || stickRy !== 0)) {
+              if (camMode === 'freeOrbit' && tControls) {
+                  const orbitOffset = tCam.position.clone().sub(tControls.target);
+                  const sph = new THREE.Spherical().setFromVector3(orbitOffset);
+                  sph.theta -= stickRx * rightStickSens;
+                  sph.phi = Math.max(0.08, Math.min(Math.PI - 0.08, sph.phi - stickRy * rightStickSens));
+                  orbitOffset.setFromSpherical(sph);
+                  tCam.position.copy(tControls.target).add(orbitOffset);
+                  tCam.lookAt(tControls.target);
+              } else if (camMode === 'firstPerson') {
+                  orbitYawRef.current -= stickRx * rightStickSens;
+                  orbitFirstPersonPitchRef.current = Math.max(-1.35, Math.min(1.35, (orbitFirstPersonPitchRef.current || 0) - stickRy * rightStickSens));
+              } else if (camMode !== 'isometric' && camMode !== 'topDown3D') {
+                  orbitYawRef.current -= stickRx * rightStickSens;
+                  orbitPitchRef.current = Math.max(-0.35, Math.min(1.45, (orbitPitchRef.current !== undefined ? orbitPitchRef.current : 0.38) + stickRy * rightStickSens));
+              }
+          }
           if (camMode === 'freeOrbit') {
               if (tControls) {
-                  if (!draggingRef.current) tControls.enabled = true;
+                  tControls.enabled = camMovAllowed && !draggingRef.current;
                   tControls.update();
               }
           } else {
@@ -6865,24 +7124,28 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                   const targetY = tp.y + targetH;
                   const targetZ = tp.z;
 
+                  const scratchCamVec = (tCam.userData._gvScratchVec as THREE.Vector3) || (tCam.userData._gvScratchVec = new THREE.Vector3());
                   if (camMode === 'firstPerson') {
                       const eyeY = tp.y + dim.h * 0.85;
-                      const eyePos = new THREE.Vector3(targetX, eyeY, targetZ);
                       const yawFp = orbitYawRef.current || 0;
                       const pitchFp = Math.max(-1.35, Math.min(1.35, orbitFirstPersonPitchRef.current || 0));
                       const cosPitchFp = Math.cos(pitchFp);
-                      const lookDir = new THREE.Vector3(-Math.sin(yawFp) * cosPitchFp, Math.sin(pitchFp), -Math.cos(yawFp) * cosPitchFp);
-                      tCam.position.lerp(eyePos, lerpAlpha);
-                      tCam.lookAt(tCam.position.x + lookDir.x * 10, tCam.position.y + lookDir.y * 10, tCam.position.z + lookDir.z * 10);
+                      scratchCamVec.set(targetX, eyeY, targetZ);
+                      tCam.position.lerp(scratchCamVec, lerpAlpha);
+                      tCam.lookAt(
+                          tCam.position.x + (-Math.sin(yawFp) * cosPitchFp) * 10,
+                          tCam.position.y + Math.sin(pitchFp) * 10,
+                          tCam.position.z + (-Math.cos(yawFp) * cosPitchFp) * 10
+                      );
                   } else if (camMode === 'isometric') {
                       const isoDist = orbitDistanceRef.current || 14;
-                      const desired = new THREE.Vector3(targetX + isoDist * 0.7, targetY + isoDist * 0.6, targetZ + isoDist * 0.7);
-                      tCam.position.lerp(desired, lerpAlpha);
+                      scratchCamVec.set(targetX + isoDist * 0.7, targetY + isoDist * 0.6, targetZ + isoDist * 0.7);
+                      tCam.position.lerp(scratchCamVec, lerpAlpha);
                       tCam.lookAt(targetX, targetY, targetZ);
                   } else if (camMode === 'topDown3D') {
                       const topDist = orbitDistanceRef.current || 16;
-                      const desired = new THREE.Vector3(targetX, targetY + topDist, targetZ + 0.1);
-                      tCam.position.lerp(desired, lerpAlpha);
+                      scratchCamVec.set(targetX, targetY + topDist, targetZ + 0.1);
+                      tCam.position.lerp(scratchCamVec, lerpAlpha);
                       tCam.lookAt(targetX, targetY, targetZ);
                   } else {
                       // thirdPerson orbit
@@ -6893,13 +7156,13 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                       const cy = Math.cos(pitch);
                       const sy = Math.sin(pitch);
                       const desiredY = Math.max(0.25, targetY + dist * sy);
-                      const desired = new THREE.Vector3(
+                      scratchCamVec.set(
                           targetX + dist * Math.sin(yaw) * cy,
                           desiredY,
                           targetZ + dist * Math.cos(yaw) * cy
                       );
 
-                      tCam.position.lerp(desired, lerpAlpha);
+                      tCam.position.lerp(scratchCamVec, lerpAlpha);
                       tCam.lookAt(targetX, targetY, targetZ);
                   }
               }
@@ -7755,18 +8018,29 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                 const isControlButton = obj.name.toLowerCase().includes('btn') || obj.name.toLowerCase().includes('boton') || obj.name.toLowerCase().includes('button') || obj.controlAction;
                 const hasClickScript = obj.scripts && obj.scripts.some(s => s.trigger === 'OnClick');
                 const isInteractive = isControlButton || hasClickScript || obj.isDraggable;
-                const scaleX = obj.scaleX ?? 1;
-                const scaleY = obj.scaleY ?? 1;
-                const rotation = obj.rotation ?? 0;
+                const scaleX = (obj.scaleX ?? 1) * (obj.animScaleX ?? 1) * (obj.direction === 'left' ? -1 : 1);
+                const scaleY = (obj.scaleY ?? 1) * (obj.animScaleY ?? 1) * (obj.flipY ? -1 : 1);
+                const rotation = (obj.rotation ?? 0) + (obj.animRotation ?? 0);
+                const uiX = (obj.x || 0) + (obj.animOffsetX || 0);
+                const uiY = (obj.y || 0) + (obj.animOffsetY || 0);
+                let resolvedBgUrl = obj.imageUrl || '';
+                if (!resolvedBgUrl && obj.assetId) {
+                    const foundUiAsset = assets?.find(a => String(a.id) === String(obj.assetId));
+                    if (foundUiAsset) resolvedBgUrl = foundUiAsset.url;
+                }
+                if (resolvedBgUrl && !resolvedBgUrl.startsWith('data:') && !resolvedBgUrl.startsWith('http://') && !resolvedBgUrl.startsWith('https://') && !resolvedBgUrl.startsWith('/')) {
+                    const foundUiAsset = assets?.find(a => String(a.id) === String(resolvedBgUrl) || a.name === resolvedBgUrl);
+                    if (foundUiAsset) resolvedBgUrl = foundUiAsset.url;
+                }
                 
                 const style: React.CSSProperties = {
                     position: 'absolute',
-                    left: `${obj.x}px`,
-                    top: `${obj.y}px`,
+                    left: `${uiX}px`,
+                    top: `${uiY}px`,
                     width: `${obj.width}px`,
                     height: `${obj.height}px`,
-                    backgroundColor: obj.imageUrl ? 'transparent' : (obj.isHealthBar ? 'transparent' : obj.color),
-                    backgroundImage: obj.imageUrl ? `url(${obj.imageUrl})` : 'none',
+                    backgroundColor: (resolvedBgUrl || obj.videoUrl) ? 'transparent' : (obj.isHealthBar ? 'transparent' : obj.color),
+                    backgroundImage: (!obj.videoUrl && resolvedBgUrl) ? `url(${resolvedBgUrl})` : 'none',
                     backgroundSize: '100% 100%',
                     backgroundPosition: 'center',
                     backgroundRepeat: 'no-repeat',
@@ -7779,7 +8053,7 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                     fontSize: `${obj.fontSize || 16}px`,
                     pointerEvents: isInteractive ? 'auto' : 'none',
                     cursor: isInteractive ? 'pointer' : 'default',
-                    transformOrigin: 'top left',
+                    transformOrigin: 'center center',
                     transform: `rotate(${rotation}deg) scale(${scaleX}, ${scaleY})`,
                 };
                 
@@ -7825,9 +8099,19 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                             onPointerDown={handlePress}
                             onPointerUp={handleRelease}
                             onPointerLeave={handleRelease}
-                            className="font-bold active:bg-indigo-500/70 select-none outline-none"
+                            className="font-bold active:bg-indigo-500/70 select-none outline-none overflow-hidden"
                         >
-                            <span style={{ transform: scaleX < 0 ? 'scaleX(-1)' : 'none' }}>
+                            {obj.videoUrl && (
+                                <video
+                                    src={obj.videoUrl}
+                                    autoPlay={obj.videoAutoplay !== false}
+                                    loop={obj.videoLoop !== false}
+                                    muted={obj.videoMuted !== false}
+                                    playsInline
+                                    className="absolute inset-0 w-full h-full object-fill pointer-events-none"
+                                />
+                            )}
+                            <span className="relative z-10" style={{ transform: scaleX < 0 ? 'scaleX(-1)' : 'none' }}>
                                 {obj.text && renderUITextElements(obj.text, obj)}
                             </span>
                         </button>
@@ -7889,7 +8173,17 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
 
                 return (
                     <div key={obj.id} style={style} onPointerDown={hasClickScript ? handlePress : undefined}>
-                        {obj.text && <div className="w-full h-full p-1 font-bold text-white text-center flex items-center justify-center pointer-events-none" style={{ transform: scaleX < 0 ? 'scaleX(-1)' : 'none' }}>{renderUITextElements(obj.text, obj)}</div>}
+                        {obj.videoUrl && (
+                            <video
+                                src={obj.videoUrl}
+                                autoPlay={obj.videoAutoplay !== false}
+                                loop={obj.videoLoop !== false}
+                                muted={obj.videoMuted !== false}
+                                playsInline
+                                className="absolute inset-0 w-full h-full object-fill pointer-events-none"
+                            />
+                        )}
+                        {obj.text && <div className="w-full h-full p-1 font-bold text-white text-center flex items-center justify-center pointer-events-none relative z-10" style={{ transform: scaleX < 0 ? 'scaleX(-1)' : 'none' }}>{renderUITextElements(obj.text, obj)}</div>}
                     </div>
                 );
             })}
