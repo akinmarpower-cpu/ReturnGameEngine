@@ -272,6 +272,106 @@ const getExported3DRetryHelpersScript = (): string => [
     '            };',
     '        }',
     '',
+    '        function traverseOwnObject3DExport(root, callback) {',
+    '            if (!root) return;',
+    '            callback(root);',
+    '            if (!root.children) return;',
+    '            for (var i = 0; i < root.children.length; i++) {',
+    '                var child = root.children[i];',
+    '                if (child && child.userData && child.userData.isGameObjectRoot) continue;',
+    '                traverseOwnObject3DExport(child, callback);',
+    '            }',
+    '        }',
+    '',
+    '        function wouldCreateParentCycle3DExport(childId, newParentId, objectsById) {',
+    '            if (newParentId === null || newParentId === undefined) return false;',
+    '            if (newParentId === childId) return true;',
+    '            var currId = newParentId;',
+    '            var safety = 100;',
+    '            while (currId && safety-- > 0) {',
+    '                if (currId === childId) return true;',
+    '                var pObj = objectsById.get(currId);',
+    '                currId = pObj ? pObj.parentId : null;',
+    '            }',
+    '            return false;',
+    '        }',
+    '',
+    '        function composeEulerXYZMat34Export(px, py, pz, rx, ry, rz) {',
+    '            var cx = Math.cos(rx), sx = Math.sin(rx);',
+    '            var cy = Math.cos(ry), sy = Math.sin(ry);',
+    '            var cz = Math.cos(rz), sz = Math.sin(rz);',
+    '            return [',
+    '                cy * cz, -cy * sz, sy, px,',
+    '                cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy, py,',
+    '                sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy, pz',
+    '            ];',
+    '        }',
+    '',
+    '        function mulMat34Export(a, b) {',
+    '            return [',
+    '                a[0] * b[0] + a[1] * b[4] + a[2] * b[8],',
+    '                a[0] * b[1] + a[1] * b[5] + a[2] * b[9],',
+    '                a[0] * b[2] + a[1] * b[6] + a[2] * b[10],',
+    '                a[0] * b[3] + a[1] * b[7] + a[2] * b[11] + a[3],',
+    '                a[4] * b[0] + a[5] * b[4] + a[6] * b[8],',
+    '                a[4] * b[1] + a[5] * b[5] + a[6] * b[9],',
+    '                a[4] * b[2] + a[5] * b[6] + a[6] * b[10],',
+    '                a[4] * b[3] + a[5] * b[7] + a[6] * b[11] + a[7],',
+    '                a[8] * b[0] + a[9] * b[4] + a[10] * b[8],',
+    '                a[8] * b[1] + a[9] * b[5] + a[10] * b[9],',
+    '                a[8] * b[2] + a[9] * b[6] + a[10] * b[10],',
+    '                a[8] * b[3] + a[9] * b[7] + a[10] * b[11] + a[11]',
+    '            ];',
+    '        }',
+    '',
+    '        function extractEulerXYZFromMat34Export(m) {',
+    '            var m11 = m[0], m12 = m[1], m13 = m[2];',
+    '            var m22 = m[5], m23 = m[6];',
+    '            var m32 = m[9], m33 = m[10];',
+    '            var ey = Math.asin(Math.max(-1, Math.min(1, m13)));',
+    '            var ex = 0, ez = 0;',
+    '            if (Math.abs(m13) < 0.9999999) {',
+    '                ex = Math.atan2(-m23, m33);',
+    '                ez = Math.atan2(-m12, m11);',
+    '            } else {',
+    '                ex = Math.atan2(m32, m22);',
+    '                ez = 0;',
+    '            }',
+    '            return { x: ex, y: ey, z: ez };',
+    '        }',
+    '',
+    '        function getWorldMatrix34Export(obj, objectsById) {',
+    '            var chain = [];',
+    '            var visited = new Set();',
+    '            var curr = obj;',
+    '            var safety = 64;',
+    '            while (curr && safety-- > 0 && !visited.has(curr.id)) {',
+    '                visited.add(curr.id);',
+    '                chain.push(curr);',
+    '                if (!curr.parentId || curr.isUI) break;',
+    '                curr = objectsById.get(curr.parentId);',
+    '            }',
+    '            var acc = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];',
+    '            for (var i = chain.length - 1; i >= 0; i--) {',
+    '                var lp = getObject3DPosition(chain[i]);',
+    '                var lr = getObject3DRotation(chain[i]);',
+    '                acc = mulMat34Export(acc, composeEulerXYZMat34Export(lp.x, lp.y, lp.z, lr.x, lr.y, lr.z));',
+    '            }',
+    '            return acc;',
+    '        }',
+    '',
+    '        function getWorldTransform3DExport(obj, objectsById) {',
+    '            if (!obj) return { pos: { x: 0, y: 0, z: 0 }, rot: { x: 0, y: 0, z: 0 } };',
+    '            if (!obj.parentId || obj.isUI || !objectsById) {',
+    '                return { pos: getObject3DPosition(obj), rot: getObject3DRotation(obj) };',
+    '            }',
+    '            var m = getWorldMatrix34Export(obj, objectsById);',
+    '            return {',
+    '                pos: { x: m[3], y: m[7], z: m[11] },',
+    '                rot: extractEulerXYZFromMat34Export(m)',
+    '            };',
+    '        }',
+    '',
     '        function getEffectiveObject3DBoundsExport(obj, activePose, nowMs, options) {',
     '            var p = getObject3DPosition(obj);',
     '            var d = getObject3DDimensions(obj);',
@@ -300,18 +400,19 @@ const getExported3DRetryHelpersScript = (): string => [
     '            var effH = d.h * sclY;',
     '            var effD = d.d * sclZ;',
     '            var useStableYaw = Boolean(options && options.stableYawXZ && Math.abs(rotX) < 0.05 && Math.abs(rotZ) < 0.05);',
-    '            var cx = Math.cos(rotX), sx = Math.sin(rotX);',
-    '            var cy = useStableYaw ? 1 : Math.cos(rotY), sy = useStableYaw ? 0 : Math.sin(rotY);',
-    '            var cz = Math.cos(rotZ), sz = Math.sin(rotZ);',
-    '            var r00 = cy * cz;',
-    '            var r10 = cx * sz + sx * sy * cz;',
-    '            var r20 = sx * sz - cx * sy * cz;',
-    '            var r01 = -cy * sz;',
-    '            var r11 = cx * cz - sx * sy * sz;',
-    '            var r21 = sx * cz + cx * sy * sz;',
-    '            var r02 = sy;',
-    '            var r12 = -sx * cy;',
-    '            var r22 = cx * cy;',
+    '            var effRotY = useStableYaw ? 0 : rotY;',
+    '            var mLocal = composeEulerXYZMat34Export(posX, posY, posZ, rotX, effRotY, rotZ);',
+    '            var mWorld = mLocal;',
+    '            var parentObj = (options && options.objectsById && obj.parentId && !obj.isUI) ? options.objectsById.get(obj.parentId) : null;',
+    '            if (parentObj && !wouldCreateParentCycle3DExport(obj.id, obj.parentId, options.objectsById)) {',
+    '                mWorld = mulMat34Export(getWorldMatrix34Export(parentObj, options.objectsById), mLocal);',
+    '                posX = mWorld[3];',
+    '                posY = mWorld[7];',
+    '                posZ = mWorld[11];',
+    '            }',
+    '            var r00 = mWorld[0], r01 = mWorld[1], r02 = mWorld[2];',
+    '            var r10 = mWorld[4], r11 = mWorld[5], r12 = mWorld[6];',
+    '            var r20 = mWorld[8], r21 = mWorld[9], r22 = mWorld[10];',
     '            var localCenterY = effH / 2;',
     '            var centerX = posX + r01 * localCenterY;',
     '            var centerY = posY + r11 * localCenterY;',
@@ -322,7 +423,8 @@ const getExported3DRetryHelpersScript = (): string => [
     '            var halfX = Math.abs(r00) * hx + Math.abs(r01) * hy + Math.abs(r02) * hz;',
     '            var halfY = Math.abs(r10) * hx + Math.abs(r11) * hy + Math.abs(r12) * hz;',
     '            var halfZ = Math.abs(r20) * hx + Math.abs(r21) * hy + Math.abs(r22) * hz;',
-    '            var isRotated = Math.abs(rotX) > 1e-4 || Math.abs(rotY) > 1e-4 || Math.abs(rotZ) > 1e-4;',
+    '            var worldRot = extractEulerXYZFromMat34Export(mWorld);',
+    '            var isRotated = Math.abs(worldRot.x) > 1e-4 || Math.abs(worldRot.y) > 1e-4 || Math.abs(worldRot.z) > 1e-4;',
     '            return {',
     '                minX: centerX - halfX,',
     '                maxX: centerX + halfX,',
@@ -544,8 +646,10 @@ const getExported3DRetryHelpersScript = (): string => [
     '            var active1 = typeof activePoseAnimations !== "undefined" ? activePoseAnimations.get(o1.id) : null;',
     '            var active2 = typeof activePoseAnimations !== "undefined" ? activePoseAnimations.get(o2.id) : null;',
     '            var nowMs = performance.now();',
-    '            var b1 = getEffectiveObject3DBoundsExport(o1, active1, nowMs);',
-    '            var b2 = getEffectiveObject3DBoundsExport(o2, active2, nowMs);',
+    '            var colMap3D = new Map();',
+    '            for (var ci = 0; ci < gameObjects.length; ci++) colMap3D.set(gameObjects[ci].id, gameObjects[ci]);',
+    '            var b1 = getEffectiveObject3DBoundsExport(o1, active1, nowMs, { objectsById: colMap3D });',
+    '            var b2 = getEffectiveObject3DBoundsExport(o2, active2, nowMs, { objectsById: colMap3D });',
     '            return solveOBBCollision3DExport(b1, b2, 0.04) !== null;',
     '        }',
     '',
@@ -617,7 +721,7 @@ const getExported3DRetryHelpersScript = (): string => [
     '            var hasEmiss = Boolean(obj.emissive3D && obj.emissive3D !== "#000000" && Number(obj.emissiveIntensity3D || 0) > 0);',
     '            var emissCol = hasEmiss ? new THREE.Color(obj.emissive3D) : null;',
     '            var emissInt = hasEmiss ? (obj.emissiveIntensity3D !== undefined ? Number(obj.emissiveIntensity3D) : 0.6) : 0;',
-    '            root.traverse(function(child) {',
+    '            traverseOwnObject3DExport(root, function(child) {',
     '                if (!child.isMesh || !child.material) return;',
     '                var mats = Array.isArray(child.material) ? child.material : [child.material];',
     '                mats.forEach(function(mat) {',
@@ -715,7 +819,7 @@ const getExported3DRetryHelpersScript = (): string => [
     '        function disposeThreeResources(root) {',
     '            if (!root) return;',
     '            if (root.userData) root.userData._disposed = true;',
-    '            root.traverse(function(child) {',
+    '            traverseOwnObject3DExport(root, function(child) {',
     '                if (child.geometry) child.geometry.dispose();',
     '                if (child.material) {',
     '                    var mats = Array.isArray(child.material) ? child.material : [child.material];',
@@ -729,6 +833,7 @@ const getExported3DRetryHelpersScript = (): string => [
     '',
     '        function createExportedMesh3D(obj, THREE, GLTFLoader) {',
     '            var group = new THREE.Group();',
+    '            group.userData.isGameObjectRoot = true;',
     '            var dims = getObject3DDimensions(obj);',
     '            var shape = inferShape3D(obj);',
     '            var color = obj.color && obj.color !== "transparent" ? obj.color : (shape === "coin" ? "#facc15" : (shape === "rock" ? "#64748b" : "#6366f1"));',
@@ -1229,12 +1334,14 @@ const getExported3DRetryHelpersScript = (): string => [
     '',
     '            function resolve3DSolidsForObject(obj, dt, moveVelX, moveVelY, moveVelZ, isPlayerControlled, hasGravity3D) {',
     '                if (!obj.position3D) obj.position3D = getObject3DPosition(obj);',
+    '                var worldMap3D = new Map();',
+    '                for (var wi = 0; wi < gameObjects.length; wi++) worldMap3D.set(gameObjects[wi].id, gameObjects[wi]);',
     '                var solids3D = gameObjects.filter(function(s) { return s.id !== obj.id && isSolidObject3D(s); });',
     '                var nowPhys = performance.now();',
     '                var activePoseSelf = typeof activePoseAnimations !== "undefined" ? activePoseAnimations.get(obj.id) : null;',
     '                var boss3DBeh = (obj.behaviors || []).find(function(b) { return b.name === "Boss3D" || b.name === "Boss"; });',
     '                var useStableYaw3 = isPlayerControlled || !!boss3DBeh || inferShape3D(obj) === "character";',
-    '                var bObj = getEffectiveObject3DBoundsExport(obj, activePoseSelf, nowPhys, { stableYawXZ: useStableYaw3 });',
+    '                var bObj = getEffectiveObject3DBoundsExport(obj, activePoseSelf, nowPhys, { stableYawXZ: useStableYaw3, objectsById: worldMap3D });',
     '                var poseOffX = bObj.centerX - obj.position3D.x;',
     '                var poseOffY = bObj.minY - obj.position3D.y;',
     '                var poseOffZ = bObj.centerZ - obj.position3D.z;',
@@ -1255,11 +1362,11 @@ const getExported3DRetryHelpersScript = (): string => [
     '                    }',
     '                }',
     '                if (moveVelY <= 0.15) {',
-    '                    var bNowCarry = getEffectiveObject3DBoundsExport(obj, activePoseSelf, nowPhys, { stableYawXZ: useStableYaw3 });',
+    '                    var bNowCarry = getEffectiveObject3DBoundsExport(obj, activePoseSelf, nowPhys, { stableYawXZ: useStableYaw3, objectsById: worldMap3D });',
     '                    for (var sr = 0; sr < solids3D.length; sr++) {',
     '                        var sR = solids3D[sr], pDyR = sR._platformDy3D || 0;',
     '                        if (pDyR > 0.0001) {',
-    '                            var bSolidR = getEffectiveObject3DBoundsExport(sR, typeof activePoseAnimations !== "undefined" ? activePoseAnimations.get(sR.id) : null, nowPhys);',
+    '                            var bSolidR = getEffectiveObject3DBoundsExport(sR, typeof activePoseAnimations !== "undefined" ? activePoseAnimations.get(sR.id) : null, nowPhys, { objectsById: worldMap3D });',
     '                            var walkYR = getWalkableSurface3DExport(bNowCarry.centerX, bNowCarry.centerZ, bNowCarry.hx, bNowCarry.hz, bSolidR);',
     '                            if (walkYR !== null) {',
     '                                var prevTopR = walkYR - pDyR;',
@@ -1278,8 +1385,8 @@ const getExported3DRetryHelpersScript = (): string => [
     '                obj.position3D.z += moveVelZ * dt;',
     '                for (var sx = 0; sx < solids3D.length; sx++) {',
     '                    var sX = solids3D[sx];',
-    '                    var bSolidX = getEffectiveObject3DBoundsExport(sX, typeof activePoseAnimations !== "undefined" ? activePoseAnimations.get(sX.id) : null, nowPhys);',
-    '                    var bCurrX = getEffectiveObject3DBoundsExport(obj, activePoseSelf, nowPhys, { stableYawXZ: useStableYaw3 });',
+    '                    var bSolidX = getEffectiveObject3DBoundsExport(sX, typeof activePoseAnimations !== "undefined" ? activePoseAnimations.get(sX.id) : null, nowPhys, { objectsById: worldMap3D });',
+    '                    var bCurrX = getEffectiveObject3DBoundsExport(obj, activePoseSelf, nowPhys, { stableYawXZ: useStableYaw3, objectsById: worldMap3D });',
     '                    var walkYX = getWalkableSurface3DExport(bCurrX.centerX, bCurrX.centerZ, bCurrX.hx, bCurrX.hz, bSolidX);',
     '                    if (walkYX !== null && moveVelY <= 0.15) {',
     '                        var stepUpTol = (bSolidX.shape3D === "ramp" ? Math.max(0.45, horizSpeed * dt + 0.25) : Math.max(0.18, Math.max(0, sX._platformDy3D || 0) + 0.14)) + (wasGrounded3D ? poseShiftY : 0);',
@@ -1346,8 +1453,8 @@ const getExported3DRetryHelpersScript = (): string => [
     '                    obj.position3D.y += moveVelY * dt;',
     '                    for (var sy = 0; sy < solids3D.length; sy++) {',
     '                        var sY = solids3D[sy];',
-    '                        var bSolidY = getEffectiveObject3DBoundsExport(sY, typeof activePoseAnimations !== "undefined" ? activePoseAnimations.get(sY.id) : null, nowPhys);',
-    '                        var bCurrY = getEffectiveObject3DBoundsExport(obj, activePoseSelf, nowPhys, { stableYawXZ: useStableYaw3 });',
+    '                        var bSolidY = getEffectiveObject3DBoundsExport(sY, typeof activePoseAnimations !== "undefined" ? activePoseAnimations.get(sY.id) : null, nowPhys, { objectsById: worldMap3D });',
+    '                        var bCurrY = getEffectiveObject3DBoundsExport(obj, activePoseSelf, nowPhys, { stableYawXZ: useStableYaw3, objectsById: worldMap3D });',
     '                        var walkYY = getWalkableSurface3DExport(bCurrY.centerX, bCurrY.centerZ, bCurrY.hx, bCurrY.hz, bSolidY);',
     '                        var downSnap = wasGrounded3D ? Math.max(0.32, horizSpeed * dt * 1.8 + 0.14) + poseShiftY : Math.max(0.16, Math.abs(moveVelY) * dt + 0.08);',
     '                        var upTol = Math.max(0.4, Math.abs(moveVelY) * dt + 0.2) + (wasGrounded3D ? poseShiftY : 0);',
@@ -2330,9 +2437,13 @@ const getExported3DRetryHelpersScript = (): string => [
     '                if (camera3DRuntime.fogEnabled) eng.scene.fog = new eng.THREE.FogExp2(camera3DRuntime.fogColor || "#111827", camera3DRuntime.fogDensity || 0.02);',
     '                else eng.scene.fog = null;',
     '                var activeIds = new Set();',
+    '                var active3DList = [];',
+    '                var activeObjMap3D = new Map();',
     '                gameObjects.forEach(function(obj) {',
     '                    if (obj.isUI) return;',
     '                    activeIds.add(obj.id);',
+    '                    active3DList.push(obj);',
+    '                    activeObjMap3D.set(obj.id, obj);',
     '                    var animPosOffX = 0, animPosOffY = 0, animPosOffZ = 0;',
     '                    var animRotOffX = 0, animRotOffY = 0, animRotOffZ = 0;',
     '                    var animSclX = 1, animSclY = 1, animSclZ = 1;',
@@ -2395,14 +2506,27 @@ const getExported3DRetryHelpersScript = (): string => [
     '                            preloadExportedGLTFs([obj.modelUrl]);',
     '                            grp = existing.group;',
     '                        } else {',
-    '                            if (existing) { eng.scene.remove(existing.group); disposeThreeResources(existing.group); }',
+    '                            if (existing) {',
+    '                                var savedChildren = existing.group.children.slice();',
+    '                                for (var sci = 0; sci < savedChildren.length; sci++) {',
+    '                                    if (savedChildren[sci] && savedChildren[sci].userData && savedChildren[sci].userData.isGameObjectRoot) {',
+    '                                        eng.scene.add(savedChildren[sci]);',
+    '                                    }',
+    '                                }',
+    '                                if (existing.group.parent) existing.group.parent.remove(existing.group);',
+    '                                disposeThreeResources(existing.group);',
+    '                            }',
     '                            grp = createExportedMesh3D(obj, eng.THREE, eng.GLTFLoader);',
     '                            grp.userData.gameObjectId = obj.id;',
+    '                            grp.userData.isGameObjectRoot = true;',
     '                            grp.userData._dimsSig = dimsSig;',
     '                            eng.scene.add(grp);',
     '                            eng.meshMap.set(obj.id, { group: grp, signature: sig });',
     '                        }',
-    '                    } else grp = existing.group;',
+    '                    } else {',
+    '                        grp = existing.group;',
+    '                        grp.userData.isGameObjectRoot = true;',
+    '                    }',
     '                    if (pendingFrameClip) {',
     '                        obj._runtimeAnim3D = pendingFrameClip;',
     '                        if (grp.userData && grp.userData.playAnimation3D) {',
@@ -2421,8 +2545,29 @@ const getExported3DRetryHelpersScript = (): string => [
     '                    grp.scale.set(animSclX, animSclY, animSclZ);',
     '                });',
     '                eng.meshMap.forEach(function(entry, id) {',
-    '                    if (!activeIds.has(id)) { eng.scene.remove(entry.group); disposeThreeResources(entry.group); eng.meshMap.delete(id); if (typeof activePoseAnimations !== "undefined") activePoseAnimations.delete(id); }',
+    '                    if (!activeIds.has(id)) {',
+    '                        var orphanChildren = entry.group.children.slice();',
+    '                        for (var oci = 0; oci < orphanChildren.length; oci++) {',
+    '                            if (orphanChildren[oci] && orphanChildren[oci].userData && orphanChildren[oci].userData.isGameObjectRoot) {',
+    '                                eng.scene.add(orphanChildren[oci]);',
+    '                            }',
+    '                        }',
+    '                        if (entry.group.parent) entry.group.parent.remove(entry.group);',
+    '                        disposeThreeResources(entry.group);',
+    '                        eng.meshMap.delete(id);',
+    '                        if (typeof activePoseAnimations !== "undefined") activePoseAnimations.delete(id);',
+    '                    }',
     '                });',
+    '                for (var hi = 0; hi < active3DList.length; hi++) {',
+    '                    var hObj = active3DList[hi];',
+    '                    var hEntry = eng.meshMap.get(hObj.id);',
+    '                    if (!hEntry) continue;',
+    '                    var hasValidParent = Boolean(hObj.parentId && hObj.parentId !== hObj.id && !wouldCreateParentCycle3DExport(hObj.id, hObj.parentId, activeObjMap3D) && eng.meshMap.has(hObj.parentId));',
+    '                    var targetParentGroup = hasValidParent ? eng.meshMap.get(hObj.parentId).group : eng.scene;',
+    '                    if (hEntry.group.parent !== targetParentGroup) {',
+    '                        targetParentGroup.add(hEntry.group);',
+    '                    }',
+    '                }',
     '                var followObj = (camera3DRuntime.targetObjectName ? gameObjects.find(function(o) { return o.name === camera3DRuntime.targetObjectName && !o.isUI; }) : (currentScene && currentScene.camera3DTargetId ? gameObjects.find(function(o) { return o.id === currentScene.camera3DTargetId && !o.isUI; }) : null)) || gameObjects.find(function(o) { return !o.isUI && (o.behaviors || []).some(function(b) { return b.name === "FollowCamera3D" || b.name === "FollowCamera" || b.name === "Player3D" || b.name === "PlatformerCharacter"; }); });',
     '                var mode = resolveCam3DMode();',
     '                var camMoveAllowed = camera3DRuntime.movementEnabled !== false;',
@@ -2453,7 +2598,7 @@ const getExported3DRetryHelpersScript = (): string => [
     '                    if (eng.controls.enabled) eng.controls.update();',
     '                } else if (followObj) {',
     '                    if (eng.controls) eng.controls.enabled = false;',
-    '                    var tp = getObject3DPosition(followObj);',
+    '                    var tp = getWorldTransform3DExport(followObj, activeObjMap3D).pos;',
     '                    var dimsF = getObject3DDimensions(followObj);',
     '                    var alpha = 1 - Math.exp(-14 * deltaTime);',
     '                    var targetH = Math.max(0.6, dimsF.h * 0.5);',
@@ -2961,6 +3106,221 @@ export const generateGameHTML = (projectData?: ProjectData | null, instantStartO
             return false;
         };
 
+        let _exportIdCounter = 1;
+        const nextExportUniqueId = () => {
+            _exportIdCounter = (_exportIdCounter + 1) % 1000;
+            return Date.now() * 1000 + _exportIdCounter;
+        };
+
+        const wouldCreateParentCycleExport = (childId, newParentId, objectsById) => {
+            if (newParentId === null || newParentId === undefined) return false;
+            if (newParentId === childId) return true;
+            let currId = newParentId;
+            let safety = 100;
+            while (currId && safety-- > 0) {
+                if (currId === childId) return true;
+                currId = objectsById.get(currId)?.parentId;
+            }
+            return false;
+        };
+
+        const composeEulerXYZMat34Runtime = (px, py, pz, rx, ry, rz) => {
+            const cx = Math.cos(rx), sx = Math.sin(rx);
+            const cy = Math.cos(ry), sy = Math.sin(ry);
+            const cz = Math.cos(rz), sz = Math.sin(rz);
+            return [
+                cy * cz, -cy * sz, sy, px,
+                cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy, py,
+                sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy, pz
+            ];
+        };
+
+        const mulMat34Runtime = (a, b) => [
+            a[0] * b[0] + a[1] * b[4] + a[2] * b[8],
+            a[0] * b[1] + a[1] * b[5] + a[2] * b[9],
+            a[0] * b[2] + a[1] * b[6] + a[2] * b[10],
+            a[0] * b[3] + a[1] * b[7] + a[2] * b[11] + a[3],
+            a[4] * b[0] + a[5] * b[4] + a[6] * b[8],
+            a[4] * b[1] + a[5] * b[5] + a[6] * b[9],
+            a[4] * b[2] + a[5] * b[6] + a[6] * b[10],
+            a[4] * b[3] + a[5] * b[7] + a[6] * b[11] + a[7],
+            a[8] * b[0] + a[9] * b[4] + a[10] * b[8],
+            a[8] * b[1] + a[9] * b[5] + a[10] * b[9],
+            a[8] * b[2] + a[9] * b[6] + a[10] * b[10],
+            a[8] * b[3] + a[9] * b[7] + a[10] * b[11] + a[11]
+        ];
+
+        const invertRigidMat34Runtime = (m) => {
+            const r00 = m[0], r01 = m[4], r02 = m[8];
+            const r10 = m[1], r11 = m[5], r12 = m[9];
+            const r20 = m[2], r21 = m[6], r22 = m[10];
+            const tx = m[3], ty = m[7], tz = m[11];
+            return [
+                r00, r01, r02, -(r00 * tx + r01 * ty + r02 * tz),
+                r10, r11, r12, -(r10 * tx + r11 * ty + r12 * tz),
+                r20, r21, r22, -(r20 * tx + r21 * ty + r22 * tz)
+            ];
+        };
+
+        const extractEulerXYZRuntime = (m) => {
+            const m11 = m[0], m12 = m[1], m13 = m[2];
+            const m22 = m[5], m23 = m[6];
+            const m32 = m[9], m33 = m[10];
+            const ey = Math.asin(Math.max(-1, Math.min(1, m13)));
+            let ex = 0, ez = 0;
+            if (Math.abs(m13) < 0.9999999) {
+                ex = Math.atan2(-m23, m33);
+                ez = Math.atan2(-m12, m11);
+            } else {
+                ex = Math.atan2(m32, m22);
+                ez = 0;
+            }
+            return { x: ex, y: ey, z: ez };
+        };
+
+        const getObjPos3DFallback = (obj) => {
+            if (typeof getObject3DPosition === 'function') return getObject3DPosition(obj);
+            if (obj.position3D) return { x: Number(obj.position3D.x || 0), y: Number(obj.position3D.y || 0), z: Number(obj.position3D.z || 0) };
+            const cx = (obj.x || 0) + (obj.width || 50) / 2;
+            const cy = (obj.y || 0) + (obj.height || 50) / 2;
+            return { x: cx / 50, y: 0, z: cy / 50 };
+        };
+
+        const getObjRot3DFallback = (obj) => {
+            if (typeof getObject3DRotation === 'function') return getObject3DRotation(obj);
+            if (obj.rotation3D) return { x: Number(obj.rotation3D.x || 0), y: Number(obj.rotation3D.y || 0), z: Number(obj.rotation3D.z || 0) };
+            return { x: 0, y: -((obj.rotation || 0) * Math.PI) / 180, z: 0 };
+        };
+
+        const getWorldMatrix34Runtime = (obj, objectsById) => {
+            const chain = [];
+            const visited = new Set();
+            let curr = obj;
+            let safety = 64;
+            while (curr && safety-- > 0 && !visited.has(curr.id)) {
+                visited.add(curr.id);
+                chain.push(curr);
+                if (!curr.parentId || curr.isUI) break;
+                curr = objectsById.get(curr.parentId);
+            }
+            let acc = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
+            for (let i = chain.length - 1; i >= 0; i--) {
+                const lp = getObjPos3DFallback(chain[i]);
+                const lr = getObjRot3DFallback(chain[i]);
+                acc = mulMat34Runtime(acc, composeEulerXYZMat34Runtime(lp.x, lp.y, lp.z, lr.x, lr.y, lr.z));
+            }
+            return acc;
+        };
+
+        const getWorldTransform3DRuntime = (obj, objectsById) => {
+            if (!obj) return { pos: { x: 0, y: 0, z: 0 }, rot: { x: 0, y: 0, z: 0 } };
+            if (!obj.parentId || obj.isUI || !objectsById) {
+                return { pos: getObjPos3DFallback(obj), rot: getObjRot3DFallback(obj) };
+            }
+            const m = getWorldMatrix34Runtime(obj, objectsById);
+            return {
+                pos: { x: m[3], y: m[7], z: m[11] },
+                rot: extractEulerXYZRuntime(m)
+            };
+        };
+
+        const reparentGameObjectExport = (childId, newParentId, list) => {
+            const byId = new Map(list.map(o => [o.id, o]));
+            const child = byId.get(childId);
+            if (!child) return null;
+            const targetParentId = newParentId ?? null;
+            if (targetParentId !== null) {
+                if (!byId.has(targetParentId)) return null;
+                if (wouldCreateParentCycleExport(childId, targetParentId, byId)) return null;
+            }
+            const childAbs2D = getObjectAbsolutePosition(childId, byId);
+            let nextX = childAbs2D.x;
+            let nextY = childAbs2D.y;
+            if (targetParentId !== null) {
+                const parentAbs2D = getObjectAbsolutePosition(targetParentId, byId);
+                nextX = childAbs2D.x - parentAbs2D.x;
+                nextY = childAbs2D.y - parentAbs2D.y;
+            }
+            const childWorld3D = getWorldTransform3DRuntime(child, byId);
+            let nextPos3D = { x: Number(childWorld3D.pos.x.toFixed(3)), y: Number(childWorld3D.pos.y.toFixed(3)), z: Number(childWorld3D.pos.z.toFixed(3)) };
+            let nextRot3D = { x: Number(childWorld3D.rot.x.toFixed(4)), y: Number(childWorld3D.rot.y.toFixed(4)), z: Number(childWorld3D.rot.z.toFixed(4)) };
+            if (targetParentId !== null) {
+                const parentObj = byId.get(targetParentId);
+                const childM = composeEulerXYZMat34Runtime(childWorld3D.pos.x, childWorld3D.pos.y, childWorld3D.pos.z, childWorld3D.rot.x, childWorld3D.rot.y, childWorld3D.rot.z);
+                const parentM = getWorldMatrix34Runtime(parentObj, byId);
+                const localM = mulMat34Runtime(invertRigidMat34Runtime(parentM), childM);
+                const localRot = extractEulerXYZRuntime(localM);
+                nextPos3D = { x: Number(localM[3].toFixed(3)), y: Number(localM[7].toFixed(3)), z: Number(localM[11].toFixed(3)) };
+                nextRot3D = { x: Number(localRot.x.toFixed(4)), y: Number(localRot.y.toFixed(4)), z: Number(localRot.z.toFixed(4)) };
+            }
+            return {
+                parentId: targetParentId,
+                x: Math.round(nextX),
+                y: Math.round(nextY),
+                position3D: nextPos3D,
+                rotation3D: nextRot3D,
+                rotation: Math.round((-nextRot3D.y * 180) / Math.PI)
+            };
+        };
+
+        const stripTransientRuntimeProps = (obj) => {
+            const cloned = JSON.parse(JSON.stringify(obj));
+            Object.keys(cloned).forEach(k => {
+                if (k.startsWith('_') && k !== '_globalChildren' && k !== '_originalBehaviors') {
+                    delete cloned[k];
+                }
+            });
+            return cloned;
+        };
+
+        const instantiateGlobalObjectExport = (template, overrides, sync3dFlag) => {
+            const rootClone = stripTransientRuntimeProps(template);
+            const storedChildren = Array.isArray(rootClone._globalChildren)
+                ? rootClone._globalChildren.map(c => stripTransientRuntimeProps(c))
+                : [];
+            delete rootClone._globalChildren;
+
+            const newRootId = nextExportUniqueId();
+            rootClone.id = newRootId;
+            rootClone.parentId = overrides && overrides.parentId !== undefined ? overrides.parentId : null;
+            rootClone.vx = 0; rootClone.vy = 0;
+            rootClone.vx3D = 0; rootClone.vy3D = 0; rootClone.vz3D = 0;
+            rootClone.grounded = false; rootClone.grounded3D = false;
+
+            if (overrides && typeof overrides.x === 'number') rootClone.x = overrides.x;
+            if (overrides && typeof overrides.y === 'number') rootClone.y = overrides.y;
+            if (overrides && overrides.position3D) {
+                rootClone.position3D = { ...overrides.position3D };
+            } else if (rootClone.position3D) {
+                rootClone.position3D = { ...rootClone.position3D };
+            }
+            if (sync3dFlag && typeof sync3DTo2D === 'function') sync3DTo2D(rootClone);
+
+            const allObjects = [rootClone];
+            if (storedChildren.length > 0) {
+                const idMap = new Map();
+                idMap.set(template.id, newRootId);
+                storedChildren.forEach(ch => idMap.set(ch.id, nextExportUniqueId()));
+                storedChildren.forEach(ch => {
+                    const mappedId = idMap.get(ch.id) || nextExportUniqueId();
+                    const mappedParentId = (ch.parentId !== null && ch.parentId !== undefined && idMap.has(ch.parentId))
+                        ? idMap.get(ch.parentId)
+                        : newRootId;
+                    const childObj = {
+                        ...ch,
+                        id: mappedId,
+                        parentId: mappedParentId,
+                        vx: 0, vy: 0,
+                        vx3D: 0, vy3D: 0, vz3D: 0,
+                        grounded: false, grounded3D: false
+                    };
+                    if (sync3dFlag && typeof sync3DTo2D === 'function') sync3DTo2D(childObj);
+                    allObjects.push(childObj);
+                });
+            }
+            return { root: rootClone, allObjects };
+        };
+
         const getCollisionBox = (objWithAbsPos) => {
             const scaleX = Math.abs((objWithAbsPos.scaleX ?? 1) * (objWithAbsPos.animScaleX ?? 1));
             const scaleY = Math.abs((objWithAbsPos.scaleY ?? 1) * (objWithAbsPos.animScaleY ?? 1));
@@ -3306,11 +3666,37 @@ export const generateGameHTML = (projectData?: ProjectData | null, instantStartO
                 case 'SetParent':
                     if (targetObj) {
                         if (!params?.parentName) {
-                            targetObj.parentId = null;
+                            const updates = reparentGameObjectExport(targetObj.id, null, gameObjects);
+                            if (updates) {
+                                targetObj.parentId = null;
+                                targetObj.x = updates.x;
+                                targetObj.y = updates.y;
+                                if (isCurrentScene3D) {
+                                    targetObj.position3D = updates.position3D;
+                                    targetObj.rotation3D = updates.rotation3D;
+                                    targetObj.rotation = updates.rotation;
+                                    targetObj._moved3DThisFrame = true;
+                                    targetObj._mutatedBy3DAction = true;
+                                }
+                            } else {
+                                targetObj.parentId = null;
+                            }
                         } else {
                             const parentObj = gameObjects.find(o => o.name === params.parentName);
-                            if (parentObj) {
-                                targetObj.parentId = parentObj.id;
+                            if (parentObj && parentObj.id !== targetObj.id) {
+                                const updates = reparentGameObjectExport(targetObj.id, parentObj.id, gameObjects);
+                                if (updates) {
+                                    targetObj.parentId = parentObj.id;
+                                    targetObj.x = updates.x;
+                                    targetObj.y = updates.y;
+                                    if (isCurrentScene3D) {
+                                        targetObj.position3D = updates.position3D;
+                                        targetObj.rotation3D = updates.rotation3D;
+                                        targetObj.rotation = updates.rotation;
+                                        targetObj._moved3DThisFrame = true;
+                                        targetObj._mutatedBy3DAction = true;
+                                    }
+                                }
                             }
                         }
                     }
@@ -3942,10 +4328,11 @@ export const generateGameHTML = (projectData?: ProjectData | null, instantStartO
                             if (params.positionType === 'relativeToObject' && params.relativeToObjectName) {
                                 const relObj = gameObjects.find(o => o.name === params.relativeToObjectName);
                                 if (relObj) {
-                                    const parentAbsPos = getObjectAbsolutePosition(relObj.id, new Map(gameObjects.map(o => [o.id, o])));
+                                    const objMapNow = new Map(gameObjects.map(o => [o.id, o]));
+                                    const parentAbsPos = getObjectAbsolutePosition(relObj.id, objMapNow);
                                     spawnX = parentAbsPos.x + (Number(params.offsetX) || 0);
                                     spawnY = parentAbsPos.y + (Number(params.offsetY) || 0);
-                                    const rp3 = getObject3DPosition(relObj);
+                                    const rp3 = getWorldTransform3DRuntime(relObj, objMapNow).pos;
                                     spawnPos3 = {
                                         x: rp3.x + (Number(params.offsetX) || 0) / 50,
                                         y: rp3.y,
@@ -3955,23 +4342,13 @@ export const generateGameHTML = (projectData?: ProjectData | null, instantStartO
                             } else if (params.x !== undefined || params.y !== undefined) {
                                 spawnPos3 = { x: spawnX / 50, y: spawnPos3.y, z: spawnY / 50 };
                             }
-                            const newObj = {
-                                ...JSON.parse(JSON.stringify(templateObj)),
-                                id: Date.now() + Math.random(),
+                            const spawned = instantiateGlobalObjectExport(templateObj, {
                                 x: spawnX,
                                 y: spawnY,
-                                parentId: null,
-                                vx: 0,
-                                vy: 0,
-                                vx3D: 0,
-                                vy3D: 0,
-                                vz3D: 0,
-                                grounded: false,
-                                grounded3D: false,
-                                position3D: isCurrentScene3D ? spawnPos3 : templateObj.position3D
-                            };
-                            if (isCurrentScene3D) sync3DTo2D(newObj);
-                            gameObjects.push(newObj);
+                                position3D: isCurrentScene3D ? spawnPos3 : templateObj.position3D,
+                                parentId: null
+                            }, isCurrentScene3D);
+                            spawned.allObjects.forEach(o => gameObjects.push(o));
                         }
                     }
                     break;
@@ -3982,25 +4359,16 @@ export const generateGameHTML = (projectData?: ProjectData | null, instantStartO
                         const templateObj = allScenes.flatMap(s => s.gameObjects).find(o => o.name === templateName) || globalObjects.find(o => o.name === templateName) || gameObjects.find(o => o.name === templateName);
                         const targetObjRef = gameObjects.find(o => o.name === targetName);
                         if (templateObj && targetObjRef) {
-                            const targetAbsPos = getObjectAbsolutePosition(targetObjRef.id, new Map(gameObjects.map(o => [o.id, o])));
-                            const tp3 = getObject3DPosition(targetObjRef);
-                            const newObj = {
-                                ...JSON.parse(JSON.stringify(templateObj)),
-                                id: Date.now() + Math.random(),
+                            const objMapNow = new Map(gameObjects.map(o => [o.id, o]));
+                            const targetAbsPos = getObjectAbsolutePosition(targetObjRef.id, objMapNow);
+                            const tp3 = getWorldTransform3DRuntime(targetObjRef, objMapNow).pos;
+                            const spawned = instantiateGlobalObjectExport(templateObj, {
                                 x: targetAbsPos.x,
                                 y: targetAbsPos.y,
-                                parentId: null,
-                                vx: 0,
-                                vy: 0,
-                                vx3D: 0,
-                                vy3D: 0,
-                                vz3D: 0,
-                                grounded: false,
-                                grounded3D: false,
-                                position3D: isCurrentScene3D ? { x: tp3.x, y: tp3.y, z: tp3.z } : templateObj.position3D
-                            };
-                            if (isCurrentScene3D) sync3DTo2D(newObj);
-                            gameObjects.push(newObj);
+                                position3D: isCurrentScene3D ? { x: tp3.x, y: tp3.y, z: tp3.z } : templateObj.position3D,
+                                parentId: null
+                            }, isCurrentScene3D);
+                            spawned.allObjects.forEach(o => gameObjects.push(o));
                         }
                     }
                     break;
@@ -4748,7 +5116,9 @@ export const generateGameHTML = (projectData?: ProjectData | null, instantStartO
                     if (targetObj && params?.targetObjectName) {
                         var tLook = gameObjects.find(function(o) { return o.name === params.targetObjectName; });
                         if (tLook) {
-                            var pSrc = getObject3DPosition(targetObj), pDst = getObject3DPosition(tLook);
+                            var lookMap3D = new Map(gameObjects.map(function(o) { return [o.id, o]; }));
+                            var pSrc = getWorldTransform3DRuntime(targetObj, lookMap3D).pos;
+                            var pDst = getWorldTransform3DRuntime(tLook, lookMap3D).pos;
                             if (!targetObj.rotation3D) targetObj.rotation3D = { x: 0, y: 0, z: 0 };
                             targetObj.rotation3D.y = Math.atan2(pDst.x - pSrc.x, pDst.z - pSrc.z);
                             targetObj.rotation = (targetObj.rotation3D.y * 180) / Math.PI;
@@ -4760,12 +5130,25 @@ export const generateGameHTML = (projectData?: ProjectData | null, instantStartO
                     if (targetObj && params?.targetObjectName) {
                         var tChase = gameObjects.find(function(o) { return o.name === params.targetObjectName; });
                         if (tChase) {
-                            var pFrom = getObject3DPosition(targetObj), pTo = getObject3DPosition(tChase);
+                            var chaseMap3D = new Map(gameObjects.map(function(o) { return [o.id, o]; }));
+                            var pFrom = getWorldTransform3DRuntime(targetObj, chaseMap3D).pos;
+                            var pTo = getWorldTransform3DRuntime(tChase, chaseMap3D).pos;
                             var dx3 = pTo.x - pFrom.x, dz3 = pTo.z - pFrom.z, dist3 = Math.hypot(dx3, dz3);
                             if (dist3 > 0.15) {
                                 var spd3 = Number(params?.speed ?? 3.5);
                                 var stepM3 = isContinuous ? spd3 * deltaTime : Math.min(dist3, spd3 * 0.25);
-                                targetObj.position3D = { x: pFrom.x + (dx3 / dist3) * stepM3, y: pFrom.y, z: pFrom.z + (dz3 / dist3) * stepM3 };
+                                var nextWx = pFrom.x + (dx3 / dist3) * stepM3;
+                                var nextWz = pFrom.z + (dz3 / dist3) * stepM3;
+                                if (targetObj.parentId && chaseMap3D.has(targetObj.parentId)) {
+                                    var parM = getWorldMatrix34Runtime(chaseMap3D.get(targetObj.parentId), chaseMap3D);
+                                    var invParM = invertRigidMat34Runtime(parM);
+                                    var curLocalP = getObjPos3DFallback(targetObj);
+                                    var desiredW = composeEulerXYZMat34Runtime(nextWx, pFrom.y, nextWz, 0, 0, 0);
+                                    var nextLocalM = mulMat34Runtime(invParM, desiredW);
+                                    targetObj.position3D = { x: nextLocalM[3], y: curLocalP.y, z: nextLocalM[11] };
+                                } else {
+                                    targetObj.position3D = { x: nextWx, y: pFrom.y, z: nextWz };
+                                }
                                 if (!targetObj.rotation3D) targetObj.rotation3D = { x: 0, y: 0, z: 0 };
                                 targetObj.rotation3D.y = Math.atan2(dx3, dz3);
                                 targetObj.rotation = (targetObj.rotation3D.y * 180) / Math.PI;
@@ -4780,15 +5163,11 @@ export const generateGameHTML = (projectData?: ProjectData | null, instantStartO
                     if (params?.templateObjectName) {
                         var tmpl3 = allScenes.flatMap(function(s) { return s.gameObjects || []; }).find(function(o) { return o.name === params.templateObjectName; }) || (globalObjects || []).find(function(o) { return o.name === params.templateObjectName; }) || gameObjects.find(function(o) { return o.name === params.templateObjectName; });
                         if (tmpl3) {
-                            var clone3 = JSON.parse(JSON.stringify(tmpl3));
-                            clone3.id = Date.now() + Math.random();
-                            clone3.parentId = null;
-                            clone3.vx = 0; clone3.vy = 0;
-                            clone3.vx3D = 0; clone3.vy3D = 0; clone3.vz3D = 0;
-                            clone3.grounded = false; clone3.grounded3D = false;
-                            clone3.position3D = { x: Number(params?.x3d ?? 0), y: Number(params?.y3d ?? 0), z: Number(params?.z3d ?? 0) };
-                            sync3DTo2D(clone3);
-                            gameObjects.push(clone3);
+                            var spawned3 = instantiateGlobalObjectExport(tmpl3, {
+                                parentId: null,
+                                position3D: { x: Number(params?.x3d ?? 0), y: Number(params?.y3d ?? 0), z: Number(params?.z3d ?? 0) }
+                            }, true);
+                            spawned3.allObjects.forEach(function(o) { gameObjects.push(o); });
                         }
                     }
                     break;
@@ -5150,14 +5529,15 @@ export const generateGameHTML = (projectData?: ProjectData | null, instantStartO
                     const sourceObj = obj || executingObj;
                     if (!sourceObj || !targetName) return false;
                     const maxDist = Number(cond.params?.distance ?? 3);
-                    const p1 = getObject3DPosition(sourceObj);
+                    const distMap3D = new Map(gameObjects.map(o => [o.id, o]));
+                    const p1 = getWorldTransform3DRuntime(sourceObj, distMap3D).pos;
                     if (executingObj2 && executingObj2.name === targetName && executingObj2.id !== sourceObj.id) {
-                        const p2 = getObject3DPosition(executingObj2);
+                        const p2 = getWorldTransform3DRuntime(executingObj2, distMap3D).pos;
                         return Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z) <= maxDist;
                     }
                     return gameObjects.some(cand => {
                         if (cand.name !== targetName || cand.id === sourceObj.id) return false;
-                        const p2 = getObject3DPosition(cand);
+                        const p2 = getWorldTransform3DRuntime(cand, distMap3D).pos;
                         return Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z) <= maxDist;
                     });
                 }

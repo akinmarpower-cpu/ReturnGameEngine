@@ -8,13 +8,18 @@ import {
   applyMaterialTintToGroup,
   build3DVisualSignature,
   createObject3DMesh,
-  createUniqueId,
   detectSoftwareWebGL,
   disposeObject3D,
   getObject3DDimensions,
   getObject3DPosition,
   getObject3DRotation,
+  getWorld3DTransformFromMap,
 } from '../utils/threeObjectBuilder';
+import {
+  instantiateGlobalObject,
+  reparentGameObjectUpdates,
+  wouldCreateParentCycle,
+} from '../utils/objectHierarchy';
 import {
   Box,
   Circle,
@@ -48,6 +53,7 @@ interface SceneEditor3DProps {
   onSelect: (id: number | null) => void;
   onUpdateObject: (id: number, updates: Partial<GameObject>) => void;
   onAddObject: (initialProps?: Partial<GameObject>) => void;
+  onAddObjectsBatch?: (objs: GameObject[]) => void;
   isPaused?: boolean;
   cameraCacheRef?: React.MutableRefObject<Map<string, Camera3DSnapshot>>;
 }
@@ -62,6 +68,7 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
   onSelect,
   onUpdateObject,
   onAddObject,
+  onAddObjectsBatch,
   isPaused = false,
   cameraCacheRef,
 }) => {
@@ -69,6 +76,7 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
   const [toolMode, setToolMode] = useState<ToolMode3D>('moveObj');
   const [dragAxis, setDragAxis] = useState<'xz' | 'y'>('xz');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [dragHoverTarget, setDragHoverTarget] = useState<{ id: number; name: string } | null>(null);
 
   const toolModeRef = useRef<ToolMode3D>(toolMode);
   toolModeRef.current = toolMode;
@@ -109,6 +117,7 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
     group: THREE.Group;
     startPointer: { x: number; y: number };
     startPos3D: { x: number; y: number; z: number };
+    startWorldPos: { x: number; y: number; z: number };
     plane: THREE.Plane;
     startHit: THREE.Vector3;
     lastPos3D: { x: number; y: number; z: number };
@@ -145,8 +154,9 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
     }
 
     const box = new THREE.Box3();
+    const byId = new Map<number, GameObject>(worldObjs.map((o) => [o.id, o]));
     worldObjs.forEach((o) => {
-      const p = getObject3DPosition(o);
+      const p = getWorld3DTransformFromMap(o, byId).pos;
       const d = getObject3DDimensions(o);
       box.expandByPoint(new THREE.Vector3(p.x - d.w / 2, p.y, p.z - d.d / 2));
       box.expandByPoint(new THREE.Vector3(p.x + d.w / 2, p.y + d.h, p.z + d.d / 2));
@@ -346,7 +356,7 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
           };
           onUpdateObjectRef.current(targetId, {
             rotation3D: rot3,
-            rotation: Math.round((rot3.y * 180) / Math.PI),
+            rotation: Math.round((-rot3.y * 180) / Math.PI),
           });
         } else if (toolModeRef.current === 'scaleObj') {
           const base = activeGizmoBaseDims || getObject3DDimensions(objData);
@@ -435,9 +445,13 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
           controls.enabled = false;
 
           const startPos = getObject3DPosition(objData);
+          entry.group.updateWorldMatrix(true, false);
+          const worldVec = new THREE.Vector3();
+          entry.group.getWorldPosition(worldVec);
+          const startWorldPos = { x: worldVec.x, y: worldVec.y, z: worldVec.z };
           const verticalMode = dragAxisRef.current === 'y' || e.shiftKey;
 
-          // Build drag plane
+          // Build drag plane in world coordinates passing through object's world origin
           const plane = new THREE.Plane();
           if (verticalMode) {
             const camDir = new THREE.Vector3();
@@ -445,14 +459,14 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
             camDir.y = 0;
             if (camDir.lengthSq() < 0.001) camDir.set(0, 0, 1);
             camDir.normalize();
-            plane.setFromNormalAndCoplanarPoint(camDir, new THREE.Vector3(startPos.x, startPos.y, startPos.z));
+            plane.setFromNormalAndCoplanarPoint(camDir, new THREE.Vector3(startWorldPos.x, startWorldPos.y, startWorldPos.z));
           } else {
-            plane.set(new THREE.Vector3(0, 1, 0), -startPos.y);
+            plane.set(new THREE.Vector3(0, 1, 0), -startWorldPos.y);
           }
 
           getNDC(e.clientX, e.clientY);
           raycaster.setFromCamera(ndc, camera);
-          const startHit = new THREE.Vector3(startPos.x, startPos.y, startPos.z);
+          const startHit = new THREE.Vector3(startWorldPos.x, startWorldPos.y, startWorldPos.z);
           raycaster.ray.intersectPlane(plane, startHit);
 
           dragSessionRef.current = {
@@ -460,6 +474,7 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
             group: entry.group,
             startPointer: { x: e.clientX, y: e.clientY },
             startPos3D: { ...startPos },
+            startWorldPos,
             plane,
             startHit: startHit.clone(),
             lastPos3D: { ...startPos },
@@ -474,6 +489,7 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
       }
     };
 
+    const _dragTargetWorld = new THREE.Vector3();
     const onPointerMove = (e: PointerEvent) => {
       const drag = dragSessionRef.current;
       if (!drag) return;
@@ -488,17 +504,31 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
         const dy = intersection.y - drag.startHit.y;
         const dz = intersection.z - drag.startHit.z;
 
-        const nextPos = drag.verticalMode
-          ? {
-              x: drag.startPos3D.x,
-              y: Number(Math.max(-10, Math.min(80, drag.startPos3D.y + dy)).toFixed(2)),
-              z: drag.startPos3D.z,
-            }
-          : {
-              x: Number((drag.startPos3D.x + dx).toFixed(2)),
-              y: drag.startPos3D.y,
-              z: Number((drag.startPos3D.z + dz).toFixed(2)),
-            };
+        if (drag.verticalMode) {
+          _dragTargetWorld.set(
+            drag.startWorldPos.x,
+            Math.max(-10, Math.min(80, drag.startWorldPos.y + dy)),
+            drag.startWorldPos.z
+          );
+        } else {
+          _dragTargetWorld.set(
+            drag.startWorldPos.x + dx,
+            drag.startWorldPos.y,
+            drag.startWorldPos.z + dz
+          );
+        }
+
+        const parentObj3D = drag.group.parent;
+        if (parentObj3D && parentObj3D !== objectsRoot) {
+          parentObj3D.updateWorldMatrix(true, false);
+          parentObj3D.worldToLocal(_dragTargetWorld);
+        }
+
+        const nextPos = {
+          x: Number(_dragTargetWorld.x.toFixed(2)),
+          y: Number(_dragTargetWorld.y.toFixed(2)),
+          z: Number(_dragTargetWorld.z.toFixed(2)),
+        };
 
         drag.lastPos3D = nextPos;
         drag.group.position.set(nextPos.x, nextPos.y, nextPos.z);
@@ -687,18 +717,29 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
     isPaused,
   ]);
 
-  // Synchronize GameObjects -> Three.js Scene Graph cleanly (never lose or orphan objects)
+  // Synchronize GameObjects -> Three.js Scene Graph cleanly (preserving parentId nesting)
   useEffect(() => {
     const st = threeStateRef.current;
     if (!st) return;
 
     const worldObjects = objects.filter((o) => !o.isUI);
+    const worldById = new Map<number, GameObject>(worldObjects.map((o) => [o.id, o]));
     const activeIds = new Set(worldObjects.map((o) => o.id));
 
-    // Remove deleted objects
+    const rescueNestedChildRoots = (grp: THREE.Group) => {
+      const snapshot = [...grp.children];
+      for (const ch of snapshot) {
+        if (ch.userData?.isGameObjectRoot) {
+          st.objectsRoot.add(ch);
+        }
+      }
+    };
+
+    // Remove deleted objects (rescuing any live nested children first)
     for (const [id, entry] of st.meshMap.entries()) {
       if (!activeIds.has(id)) {
-        st.objectsRoot.remove(entry.group);
+        rescueNestedChildRoots(entry.group);
+        entry.group.parent?.remove(entry.group);
         disposeObject3D(entry.group);
         st.meshMap.delete(id);
       }
@@ -730,7 +771,8 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
         }
       } else if (!entry || entry.signature !== sig) {
         if (entry) {
-          st.objectsRoot.remove(entry.group);
+          rescueNestedChildRoots(entry.group);
+          entry.group.parent?.remove(entry.group);
           disposeObject3D(entry.group);
         }
         const newGroup = createObject3DMesh(obj, assets, {
@@ -742,6 +784,19 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
         entry = { group: newGroup, signature: sig };
         st.meshMap.set(obj.id, entry);
       }
+    }
+
+    // Link Three.js parent-child hierarchy cleanly (after all groups exist)
+    for (const obj of worldObjects) {
+      const entry = st.meshMap.get(obj.id);
+      if (!entry) continue;
+      let targetParent: THREE.Object3D = st.objectsRoot;
+      if (obj.parentId && st.meshMap.has(obj.parentId) && !wouldCreateParentCycle(obj.id, obj.parentId, worldById)) {
+        targetParent = st.meshMap.get(obj.parentId)!.group;
+      }
+      if (entry.group.parent !== targetParent) {
+        targetParent.add(entry.group);
+      }
 
       // Skip overwriting active drag or gizmo transform
       if (dragSessionRef.current?.objId !== obj.id && !(st.isGizmoDragging && selectedId === obj.id)) {
@@ -751,6 +806,8 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
         entry.group.rotation.set(rot.x, rot.y, rot.z);
       }
     }
+
+    st.objectsRoot.updateMatrixWorld(true);
 
     // Update Selection BoxHelper
     if (st.selectionHelper) {
@@ -785,41 +842,128 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
     st.requestRender();
   }, [objects, assets, selectedId, toolMode, isPaused]);
 
-  // Drop Assets (GLB 3D models, images, global templates) onto 3D viewport
+  const raycastDropTarget = (clientX: number, clientY: number): { dropPos: { x: number; y: number; z: number }; hitObjId: number | null } => {
+    const st = threeStateRef.current;
+    let dropPos = { x: 0, y: 0, z: 0 };
+    let hitObjId: number | null = null;
+    if (!st) return { dropPos, hitObjId };
+
+    const rect = st.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(ndc, st.camera);
+
+    const objHits = raycaster.intersectObjects(st.objectsRoot.children, true);
+    if (objHits.length > 0) {
+      const firstHit = objHits[0];
+      let curr: THREE.Object3D | null = firstHit.object;
+      while (curr) {
+        if (typeof curr.userData?.gameObjectId === 'number') {
+          hitObjId = curr.userData.gameObjectId;
+          break;
+        }
+        curr = curr.parent;
+      }
+      dropPos = {
+        x: Number(firstHit.point.x.toFixed(2)),
+        y: Number(Math.max(0, firstHit.point.y).toFixed(2)),
+        z: Number(firstHit.point.z.toFixed(2)),
+      };
+      return { dropPos, hitObjId };
+    }
+
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const hit = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(groundPlane, hit)) {
+      dropPos = { x: Number(hit.x.toFixed(2)), y: 0, z: Number(hit.z.toFixed(2)) };
+    }
+    return { dropPos, hitObjId };
+  };
+
+  // Drop Assets, Global Object templates, or Hierarchy objects onto 3D viewport or existing 3D objects
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
+    setDragHoverTarget(null);
     const st = threeStateRef.current;
     const assetString = e.dataTransfer.getData('application/game-asset');
     const templateString = e.dataTransfer.getData('application/game-object-template');
+    const objectIdString = e.dataTransfer.getData('application/game-object-id');
 
-    let dropPos = { x: 0, y: 0, z: 0 };
-    if (st) {
-      const rect = st.renderer.domElement.getBoundingClientRect();
-      const ndc = new THREE.Vector2(
-        ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        -((e.clientY - rect.top) / rect.height) * 2 + 1
-      );
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(ndc, st.camera);
-      const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-      const hit = new THREE.Vector3();
-      if (raycaster.ray.intersectPlane(groundPlane, hit)) {
-        dropPos = { x: Number(hit.x.toFixed(2)), y: 0, z: Number(hit.z.toFixed(2)) };
+    const { dropPos, hitObjId } = raycastDropTarget(e.clientX, e.clientY);
+
+    if (objectIdString) {
+      const draggedId = Number(objectIdString);
+      const draggedObj = objects.find((o) => o.id === draggedId);
+      if (!draggedObj || Number.isNaN(draggedId)) return;
+
+      if (hitObjId !== null && hitObjId !== draggedId) {
+        const reparentUpdates = reparentGameObjectUpdates(draggedId, hitObjId, objects);
+        if (reparentUpdates) {
+          onUpdateObject(draggedId, reparentUpdates);
+          onSelect(draggedId);
+          return;
+        }
       }
+
+      // Dropped onto empty ground/space: move to dropPos (converted to parent-local if still parented)
+      let localPos = { ...dropPos };
+      if (draggedObj.parentId && st) {
+        const parentEntry = st.meshMap.get(draggedObj.parentId);
+        if (parentEntry) {
+          parentEntry.group.updateWorldMatrix(true, false);
+          const v = new THREE.Vector3(dropPos.x, dropPos.y, dropPos.z);
+          parentEntry.group.worldToLocal(v);
+          localPos = {
+            x: Number(v.x.toFixed(2)),
+            y: Number(v.y.toFixed(2)),
+            z: Number(v.z.toFixed(2)),
+          };
+        }
+      }
+      onUpdateObject(draggedId, {
+        position3D: localPos,
+        x: Math.round(localPos.x * 50),
+        y: Math.round(localPos.z * 50),
+      });
+      onSelect(draggedId);
+      return;
     }
 
     if (templateString) {
       try {
-        const tpl = JSON.parse(templateString);
-        onAddObject({
-          ...tpl,
-          id: createUniqueId(),
-          parentId: null,
-          position3D: dropPos,
-          x: Math.round(dropPos.x * 50),
-          y: Math.round(dropPos.z * 50),
+        const tpl = JSON.parse(templateString) as GameObject;
+        let targetParentId: number | null = null;
+        let spawnPos = dropPos;
+
+        if (hitObjId !== null && (e.altKey || e.shiftKey)) {
+          targetParentId = hitObjId;
+          if (st) {
+            const parentEntry = st.meshMap.get(hitObjId);
+            if (parentEntry) {
+              parentEntry.group.updateWorldMatrix(true, false);
+              const v = new THREE.Vector3(dropPos.x, dropPos.y, dropPos.z);
+              parentEntry.group.worldToLocal(v);
+              spawnPos = { x: Number(v.x.toFixed(2)), y: Number(v.y.toFixed(2)), z: Number(v.z.toFixed(2)) };
+            }
+          }
+        }
+
+        const { root, allObjects } = instantiateGlobalObject(tpl, {
+          parentId: targetParentId,
+          position3D: spawnPos,
+          x: Math.round(spawnPos.x * 50),
+          y: Math.round(spawnPos.z * 50),
         });
+        if (allObjects.length > 1 && onAddObjectsBatch) {
+          onAddObjectsBatch(allObjects);
+        } else {
+          allObjects.forEach((o) => onAddObject(o));
+        }
+        onSelect(root.id);
       } catch {}
       return;
     }
@@ -828,6 +972,20 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
       try {
         const asset: GameAsset = JSON.parse(assetString);
         const cleanName = asset.name.split('.').slice(0, -1).join('.') || asset.name;
+
+        // Dropping an image/3d-model asset directly onto an existing 3D object updates that object's texture/model!
+        if (hitObjId !== null) {
+          if (asset.type === '3d-model') {
+            onUpdateObject(hitObjId, { modelUrl: asset.url });
+            onSelect(hitObjId);
+            return;
+          } else if (asset.type === 'image') {
+            onUpdateObject(hitObjId, { imageUrl: asset.url, color: '#ffffff' });
+            onSelect(hitObjId);
+            return;
+          }
+        }
+
         if (asset.type === '3d-model') {
           onAddObject({
             name: cleanName || 'Modelo_3D',
@@ -871,10 +1029,27 @@ const SceneEditor3D: React.FC<SceneEditor3DProps> = ({
       onDragOver={(e) => {
         e.preventDefault();
         setIsDragOver(true);
+        const { hitObjId } = raycastDropTarget(e.clientX, e.clientY);
+        if (hitObjId !== null) {
+          const hitObj = objects.find((o) => o.id === hitObjId);
+          if (hitObj && dragHoverTarget?.id !== hitObj.id) {
+            setDragHoverTarget({ id: hitObj.id, name: hitObj.name });
+          }
+        } else if (dragHoverTarget !== null) {
+          setDragHoverTarget(null);
+        }
       }}
-      onDragLeave={() => setIsDragOver(false)}
+      onDragLeave={() => {
+        setIsDragOver(false);
+        setDragHoverTarget(null);
+      }}
       onDrop={handleDrop}
     >
+      {isDragOver && dragHoverTarget && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-emerald-950/95 border border-emerald-400/60 text-emerald-200 px-3 py-1.5 rounded-lg shadow-2xl text-[11px] font-bold pointer-events-none">
+          Soltar sobre «{dragHoverTarget.name}» (emparenta nodo o aplica textura/modelo)
+        </div>
+      )}
       {/* WebGL Canvas Mount */}
       <div ref={mountRef} className="w-full h-full touch-none" />
 

@@ -22,11 +22,17 @@ import {
   getObject3DDimensions,
   getObject3DPosition,
   getObject3DRotation,
+  getWorld3DTransformFromMap,
   inferShape3D,
   isSolidObject3D,
   preloadGLTFModels,
   sync3DTo2D,
 } from '../utils/threeObjectBuilder';
+import {
+  instantiateGlobalObject,
+  reparentGameObjectUpdates,
+  wouldCreateParentCycle,
+} from '../utils/objectHierarchy';
 
 const memorySaveSlots = new Map<string, string>();
 
@@ -1519,16 +1525,14 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                     const templateName = action.params.templateObjectName;
                     const templateObj = scene.gameObjects.find(o => o.name === templateName) || globalObjects?.find(o => o.name === templateName);
                     if (templateObj) {
-                        const newObj: GameObject = {
-                            ...JSON.parse(JSON.stringify(templateObj)),
-                            id: createUniqueId(),
-                            x: action.params?.x != null ? Number(action.params.x) : 0,
-                            y: action.params?.y != null ? Number(action.params.y) : 0
-                        };
+                        const spawnX = action.params?.x != null ? Number(action.params.x) : 0;
+                        const spawnY = action.params?.y != null ? Number(action.params.y) : 0;
+                        const overrides: Partial<GameObject> = { x: spawnX, y: spawnY };
                         if (is3DModeRef.current) {
-                            newObj.position3D = { x: newObj.x / 50, y: 0, z: newObj.y / 50 };
+                            overrides.position3D = { x: spawnX / 50, y: 0, z: spawnY / 50 };
                         }
-                        gameObjectsRef.current.push(newObj);
+                        const spawned = instantiateGlobalObject(templateObj, overrides);
+                        gameObjectsRef.current.push(...spawned.allObjects);
                     }
                 }
                 break;
@@ -1539,16 +1543,15 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                     const templateObj = scene.gameObjects.find(o => o.name === templateName) || globalObjects?.find(o => o.name === templateName);
                     const targetObjRef = gameObjectsRef.current.find(o => o.name === targetName);
                     if (templateObj && targetObjRef) {
-                        const targetAbsPos = getObjectAbsolutePosition(targetObjRef.id, new Map(gameObjectsRef.current.map(o => [o.id, o])));
-                        const targetPos3D = getObject3DPosition(targetObjRef);
-                        const newObj: GameObject = {
-                            ...JSON.parse(JSON.stringify(templateObj)),
-                            id: createUniqueId(),
+                        const objMap = new Map(gameObjectsRef.current.map(o => [o.id, o]));
+                        const targetAbsPos = getObjectAbsolutePosition(targetObjRef.id, objMap);
+                        const targetWorld3D = getWorld3DTransformFromMap(targetObjRef, objMap);
+                        const spawned = instantiateGlobalObject(templateObj, {
                             x: targetAbsPos.x,
                             y: targetAbsPos.y,
-                            position3D: { ...targetPos3D }
-                        };
-                        gameObjectsRef.current.push(newObj);
+                            position3D: { ...targetWorld3D.pos },
+                        });
+                        gameObjectsRef.current.push(...spawned.allObjects);
                     }
                 }
                 break;
@@ -1577,12 +1580,17 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                 break;
             case 'SetParent':
                 if (targetObj) {
+                    const objMap = new Map<number, GameObject>(gameObjectsRef.current.map(o => [o.id, o]));
                     if (!action.params?.parentName) {
-                        targetObj.parentId = null;
+                        const updates = reparentGameObjectUpdates(targetObj.id, null, gameObjectsRef.current);
+                        if (updates) Object.assign(targetObj, updates);
+                        else targetObj.parentId = null;
                     } else {
                         const parentObj = gameObjectsRef.current.find(o => o.name === action.params.parentName);
-                        if (parentObj) {
-                            targetObj.parentId = parentObj.id;
+                        if (parentObj && !wouldCreateParentCycle(targetObj.id, parentObj.id, objMap)) {
+                            const updates = reparentGameObjectUpdates(targetObj.id, parentObj.id, gameObjectsRef.current);
+                            if (updates) Object.assign(targetObj, updates);
+                            else targetObj.parentId = parentObj.id;
                         }
                     }
                 }
@@ -2369,8 +2377,9 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
               if (targetObj && params?.targetObjectName) {
                   const lookTarget = gameObjectsRef.current.find(o => o.name === params.targetObjectName);
                   if (lookTarget) {
-                      const p1 = getObject3DPosition(targetObj);
-                      const p2 = getObject3DPosition(lookTarget);
+                      const objMap = new Map<number, GameObject>(gameObjectsRef.current.map(o => [o.id, o]));
+                      const p1 = getWorld3DTransformFromMap(targetObj, objMap).pos;
+                      const p2 = getWorld3DTransformFromMap(lookTarget, objMap).pos;
                       const rot = getObject3DRotation(targetObj);
                       rot.y = Math.atan2(p2.x - p1.x, p2.z - p1.z);
                       targetObj.rotation3D = rot;
@@ -2383,8 +2392,9 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
               if (targetObj && params?.targetObjectName) {
                   const moveTarget = gameObjectsRef.current.find(o => o.name === params.targetObjectName);
                   if (moveTarget) {
+                      const objMap = new Map<number, GameObject>(gameObjectsRef.current.map(o => [o.id, o]));
                       const p1 = getObject3DPosition(targetObj);
-                      const p2 = getObject3DPosition(moveTarget);
+                      const p2 = getWorld3DTransformFromMap(moveTarget, objMap).pos;
                       const dx = p2.x - p1.x;
                       const dz = p2.z - p1.z;
                       const dist = Math.hypot(dx, dz);
@@ -2408,15 +2418,15 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
               if (params?.templateObjectName) {
                   const tpl = scene.gameObjects.find(o => o.name === params.templateObjectName) || globalObjects?.find(o => o.name === params.templateObjectName);
                   if (tpl) {
-                      const newObj: GameObject = JSON.parse(JSON.stringify(tpl));
-                      newObj.id = createUniqueId();
-                      newObj.position3D = {
-                          x: Number(params.x3d ?? 0),
-                          y: Number(params.y3d ?? 0),
-                          z: Number(params.z3d ?? 0),
-                      };
-                      sync3DTo2D(newObj);
-                      gameObjectsRef.current.push(newObj);
+                      const spawned = instantiateGlobalObject(tpl, {
+                          position3D: {
+                              x: Number(params.x3d ?? 0),
+                              y: Number(params.y3d ?? 0),
+                              z: Number(params.z3d ?? 0),
+                          },
+                      });
+                      spawned.allObjects.forEach(s => sync3DTo2D(s));
+                      gameObjectsRef.current.push(...spawned.allObjects);
                   }
               }
               break;
@@ -2892,14 +2902,15 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
             const sourceObj = obj || executingObj;
             if (!sourceObj || !targetName) return false;
             const maxDist = Number(cond.params?.distance ?? 3);
-            const p1 = getObject3DPosition(sourceObj);
+            const objMap = new Map<number, GameObject>(gameObjectsRef.current.map(o => [o.id, o]));
+            const p1 = getWorld3DTransformFromMap(sourceObj, objMap).pos;
             if (executingObj2 && executingObj2.name === targetName && executingObj2.id !== sourceObj.id) {
-                const p2 = getObject3DPosition(executingObj2);
+                const p2 = getWorld3DTransformFromMap(executingObj2, objMap).pos;
                 return Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z) <= maxDist;
             }
             return gameObjectsRef.current.some(cand => {
                 if (cand.name !== targetName || cand.id === sourceObj.id) return false;
-                const p2 = getObject3DPosition(cand);
+                const p2 = getWorld3DTransformFromMap(cand, objMap).pos;
                 return Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z) <= maxDist;
             });
         }
@@ -3894,12 +3905,13 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
           hasGravity3D: boolean
       ) => {
           if (!obj.position3D) obj.position3D = getObject3DPosition(obj);
+          const worldMap3D = new Map<number, GameObject>(gameObjectsRef.current.map(o => [o.id, o]));
           const solids3D = gameObjectsRef.current.filter(s => s.id !== obj.id && isSolidObject3D(s));
           const nowPhysics = performance.now();
           const activePoseForObj = activePoseAnimationsRef.current.get(obj.id);
           const boss3DBehav = obj.behaviors?.find(b => b.name === 'Boss3D' || b.name === 'Boss');
           const useStableYawXZ = isPlayerControlled || !!boss3DBehav || inferShape3D(obj) === 'character';
-          const bObj = getEffectiveObject3DBounds(obj, activePoseForObj, nowPhysics, { stableYawXZ: useStableYawXZ });
+          const bObj = getEffectiveObject3DBounds(obj, activePoseForObj, nowPhysics, { stableYawXZ: useStableYawXZ, objectsById: worldMap3D });
           const poseOffX = bObj.centerX - obj.position3D.x;
           const poseOffY = bObj.minY - obj.position3D.y;
           const poseOffZ = bObj.centerZ - obj.position3D.z;
@@ -3922,11 +3934,11 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
               }
           }
           if (moveVelY <= 0.15) {
-              const bNowCarry = getEffectiveObject3DBounds(obj, activePoseForObj, nowPhysics, { stableYawXZ: useStableYawXZ });
+              const bNowCarry = getEffectiveObject3DBounds(obj, activePoseForObj, nowPhysics, { stableYawXZ: useStableYawXZ, objectsById: worldMap3D });
               for (const s of solids3D) {
                   const pDy = (s as any)._platformDy3D || 0;
                   if (pDy > 0.0001) {
-                      const bSolid = getEffectiveObject3DBounds(s, activePoseAnimationsRef.current.get(s.id), nowPhysics);
+                      const bSolid = getEffectiveObject3DBounds(s, activePoseAnimationsRef.current.get(s.id), nowPhysics, { objectsById: worldMap3D });
                       const walkY = getWalkableSurface3D(bNowCarry.centerX, bNowCarry.centerZ, bNowCarry.hx, bNowCarry.hz, bSolid);
                       if (walkY !== null) {
                           const prevTop = walkY - pDy;
@@ -3948,8 +3960,8 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
           obj.position3D.z += moveVelZ * dt;
 
           for (const s of solids3D) {
-              const bSolid = getEffectiveObject3DBounds(s, activePoseAnimationsRef.current.get(s.id), nowPhysics);
-              const bCurr = getEffectiveObject3DBounds(obj, activePoseForObj, nowPhysics, { stableYawXZ: useStableYawXZ });
+              const bSolid = getEffectiveObject3DBounds(s, activePoseAnimationsRef.current.get(s.id), nowPhysics, { objectsById: worldMap3D });
+              const bCurr = getEffectiveObject3DBounds(obj, activePoseForObj, nowPhysics, { stableYawXZ: useStableYawXZ, objectsById: worldMap3D });
 
               const walkY = getWalkableSurface3D(bCurr.centerX, bCurr.centerZ, bCurr.hx, bCurr.hz, bSolid);
               if (walkY !== null && moveVelY <= 0.15) {
@@ -4036,8 +4048,8 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
               obj.position3D.y += moveVelY * dt;
 
               for (const s of solids3D) {
-                  const bSolid = getEffectiveObject3DBounds(s, activePoseAnimationsRef.current.get(s.id), nowPhysics);
-                  const bCurr = getEffectiveObject3DBounds(obj, activePoseForObj, nowPhysics, { stableYawXZ: useStableYawXZ });
+                  const bSolid = getEffectiveObject3DBounds(s, activePoseAnimationsRef.current.get(s.id), nowPhysics, { objectsById: worldMap3D });
+                  const bCurr = getEffectiveObject3DBounds(obj, activePoseForObj, nowPhysics, { stableYawXZ: useStableYawXZ, objectsById: worldMap3D });
 
                   const walkY = getWalkableSurface3D(bCurr.centerX, bCurr.centerZ, bCurr.hx, bCurr.hz, bSolid);
                   const downSnap = wasGrounded3D
@@ -6939,9 +6951,11 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
           }
 
           const active3DIds = new Set<number>();
+          const active3D: GameObject[] = [];
           gameObjectsRef.current.forEach(obj => {
               if (obj.isUI) return;
               active3DIds.add(obj.id);
+              active3D.push(obj);
 
               let animPosOffsetX = 0;
               let animPosOffsetY = 0;
@@ -7034,17 +7048,22 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
                       group = existing.group;
                   } else {
                       if (existing) {
-                          tScene.remove(existing.group);
+                          [...existing.group.children].forEach(c => {
+                              if (c.userData?.isGameObjectRoot) tScene.add(c);
+                          });
+                          existing.group.parent?.remove(existing.group);
                           disposeObject3D(existing.group);
                       }
                       group = createObject3DMesh(obj, assets, { isEditor: false, hidePlaceholder: true });
                       group.userData.gameObjectId = obj.id;
+                      group.userData.isGameObjectRoot = true;
                       group.userData._dimsSig = dimsSig;
                       tScene.add(group);
                       threeMeshMapRef.current.set(obj.id, { group, signature: sig });
                   }
               } else {
                   group = existing.group;
+                  group.userData.isGameObjectRoot = true;
               }
 
               if (pendingFrameClip) {
@@ -7070,10 +7089,30 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
 
           threeMeshMapRef.current.forEach((entry, id) => {
               if (!active3DIds.has(id)) {
-                  tScene.remove(entry.group);
+                  [...entry.group.children].forEach(c => {
+                      if (c.userData?.isGameObjectRoot) tScene.add(c);
+                  });
+                  entry.group.parent?.remove(entry.group);
                   disposeObject3D(entry.group);
                   threeMeshMapRef.current.delete(id);
                   activePoseAnimationsRef.current.delete(id);
+              }
+          });
+
+          const active3DObjMap = new Map<number, GameObject>(active3D.map(o => [o.id, o]));
+          active3D.forEach(obj => {
+              const entry = threeMeshMapRef.current.get(obj.id);
+              if (!entry) return;
+              const hasValidParent =
+                  obj.parentId &&
+                  obj.parentId !== obj.id &&
+                  !wouldCreateParentCycle(obj.id, obj.parentId, active3DObjMap) &&
+                  threeMeshMapRef.current.has(obj.parentId);
+              const targetParent: THREE.Object3D = hasValidParent
+                  ? threeMeshMapRef.current.get(obj.parentId!)!.group
+                  : tScene;
+              if (entry.group.parent !== targetParent) {
+                  targetParent.add(entry.group);
               }
           });
 
@@ -7116,7 +7155,7 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
           } else {
               if (tControls) tControls.enabled = false;
               if (camTargetObj) {
-                  const tp = getObject3DPosition(camTargetObj);
+                  const tp = getWorld3DTransformFromMap(camTargetObj, active3DObjMap).pos;
                   const dim = getObject3DDimensions(camTargetObj);
                   const lerpAlpha = 1 - Math.exp(-14 * deltaTime);
                   const targetH = Math.max(0.6, dim.h * 0.5);
@@ -7545,8 +7584,9 @@ const GameView: React.FC<GameViewProps> = ({ scene, sceneMode, allScenes, animat
     const active1 = activePoseAnimationsRef.current.get(obj1.id);
     const active2 = activePoseAnimationsRef.current.get(obj2.id);
     const nowPoseCol = performance.now();
-    const b1 = getEffectiveObject3DBounds(obj1, active1, nowPoseCol);
-    const b2 = getEffectiveObject3DBounds(obj2, active2, nowPoseCol);
+    const worldMap = new Map<number, GameObject>(gameObjectsRef.current.map(o => [o.id, o]));
+    const b1 = getEffectiveObject3DBounds(obj1, active1, nowPoseCol, { objectsById: worldMap });
+    const b2 = getEffectiveObject3DBounds(obj2, active2, nowPoseCol, { objectsById: worldMap });
     return boxesOverlap3D(b1, b2, 0.04);
   };
 

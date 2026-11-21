@@ -98,6 +98,7 @@ export interface GameObject {
   scripts?: ObjectScript[]; // For object-specific visual scripts
   controlAction?: 'moveLeft' | 'moveRight' | 'jump' | 'attack' | 'none' | 'moveUp' | 'moveDown' | 'run';
   parentId?: number | null; // For object hierarchy
+  _globalChildren?: GameObject[]; // Preserved child hierarchy when saved as global template
   stats?: { // For RPG elements
     hp: number;
     maxHp: number;

@@ -290,6 +290,16 @@ function parseColorSafe(colorStr?: string, fallback = '#6366f1'): THREE.Color {
   }
 }
 
+function traverseOwnObject3D(root: THREE.Object3D, visitor: (node: THREE.Object3D) => void): void {
+  visitor(root);
+  const children = root.children;
+  for (let i = 0; i < children.length; i++) {
+    const ch = children[i];
+    if (ch.userData?.isGameObjectRoot) continue;
+    traverseOwnObject3D(ch, visitor);
+  }
+}
+
 export function applyMaterialTintToGroup(root: THREE.Object3D, obj: GameObject, isEditor = false): void {
   const isHidden = obj.visible === false;
   const opacity = isHidden && isEditor ? 0.3 : (obj.opacity ?? 1);
@@ -299,7 +309,7 @@ export function applyMaterialTintToGroup(root: THREE.Object3D, obj: GameObject, 
   const emissiveColor = hasEmissive ? parseColorSafe(obj.emissive3D, '#000000') : null;
   const emissiveIntensity = hasEmissive ? (obj.emissiveIntensity3D ?? 0.6) : 0;
 
-  root.traverse((child) => {
+  traverseOwnObject3D(root, (child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh || !mesh.material) return;
     const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -432,6 +442,7 @@ export function createObject3DMesh(
   options: { isEditor?: boolean; hidePlaceholder?: boolean; onModelLoaded?: (data?: { animations: THREE.AnimationClip[] }) => void } = {}
 ): THREE.Group {
   const root = new THREE.Group();
+  root.userData.isGameObjectRoot = true;
   root.userData.gameObjectId = obj.id;
   root.userData.gameObjectName = obj.name;
 
@@ -793,7 +804,7 @@ export function createObject3DMesh(
 
 export function disposeObject3D(group: THREE.Object3D): void {
   group.userData._disposed = true;
-  group.traverse((child) => {
+  traverseOwnObject3D(group, (child) => {
     const mesh = child as THREE.Mesh;
     if (mesh.geometry) {
       mesh.geometry.dispose();
@@ -805,6 +816,51 @@ export function disposeObject3D(group: THREE.Object3D): void {
       mat.dispose();
     }
   });
+}
+
+const _wtMatA = new THREE.Matrix4();
+const _wtMatWorld = new THREE.Matrix4();
+const _wtPos = new THREE.Vector3();
+const _wtQuat = new THREE.Quaternion();
+const _wtScl = new THREE.Vector3(1, 1, 1);
+const _wtEuler = new THREE.Euler(0, 0, 0, 'XYZ');
+
+export function getWorld3DTransformFromMap(
+  obj: GameObject,
+  objectsById?: Map<number, GameObject>
+): { pos: { x: number; y: number; z: number }; rot: { x: number; y: number; z: number } } {
+  if (!obj.parentId || obj.isUI || !objectsById || !objectsById.has(obj.parentId)) {
+    return {
+      pos: getObject3DPosition(obj),
+      rot: getObject3DRotation(obj),
+    };
+  }
+  const chain: GameObject[] = [];
+  const seen = new Set<number>();
+  let curr: GameObject | undefined = obj;
+  let safety = 64;
+  while (curr && safety-- > 0 && !seen.has(curr.id)) {
+    seen.add(curr.id);
+    chain.push(curr);
+    if (!curr.parentId || curr.isUI) break;
+    curr = objectsById.get(curr.parentId);
+  }
+  _wtMatWorld.identity();
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const p = getObject3DPosition(chain[i]);
+    const r = getObject3DRotation(chain[i]);
+    _wtPos.set(p.x, p.y, p.z);
+    _wtEuler.set(r.x, r.y, r.z, 'XYZ');
+    _wtQuat.setFromEuler(_wtEuler);
+    _wtMatA.compose(_wtPos, _wtQuat, _wtScl);
+    _wtMatWorld.multiply(_wtMatA);
+  }
+  _wtMatWorld.decompose(_wtPos, _wtQuat, _wtScl);
+  _wtEuler.setFromQuaternion(_wtQuat, 'XYZ');
+  return {
+    pos: { x: _wtPos.x, y: _wtPos.y, z: _wtPos.z },
+    rot: { x: _wtEuler.x, y: _wtEuler.y, z: _wtEuler.z },
+  };
 }
 
 export interface Object3DBounds {
@@ -942,11 +998,14 @@ export function getEffectiveObject3DBounds(
     speed?: number;
   } | null,
   nowMs: number = Date.now(),
-  options?: { stableYawXZ?: boolean }
+  options?: { stableYawXZ?: boolean; objectsById?: Map<number, GameObject> }
 ): Object3DBounds {
-  const basePos = getObject3DPosition(obj);
+  const worldT = options?.objectsById
+    ? getWorld3DTransformFromMap(obj, options.objectsById)
+    : { pos: getObject3DPosition(obj), rot: getObject3DRotation(obj) };
+  const basePos = worldT.pos;
   const baseDims = getObject3DDimensions(obj);
-  const baseRot = getObject3DRotation(obj);
+  const baseRot = worldT.rot;
 
   let animPosOffX = 0;
   let animPosOffY = 0;

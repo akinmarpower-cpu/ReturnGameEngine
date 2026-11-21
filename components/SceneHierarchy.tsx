@@ -18,10 +18,18 @@ import {
   Eye,
   EyeOff,
   Lock,
-  Cpu
+  Cpu,
+  Globe,
+  Unlink
 } from 'lucide-react';
 import { useLanguage } from '../LanguageContext';
 import { compressImageBase64, compressAudioBase64, compressVideoBase64 } from '../services/exportService';
+import {
+  buildGlobalObjectTemplate,
+  instantiateGlobalObject,
+  reparentGameObjectUpdates,
+  wouldCreateParentCycle,
+} from '../utils/objectHierarchy';
 import { createUniqueId } from '../utils/threeObjectBuilder';
 
 const ObjectTreeItem: React.FC<{ 
@@ -30,27 +38,39 @@ const ObjectTreeItem: React.FC<{
     selectedId: number | null, 
     onSelect: (id: number) => void,
     onSetParent: (childId: number, parentId: number | null) => void,
+    onSaveObjectAsGlobal?: (obj: GameObject) => void,
     hasChildren: boolean,
     isExpanded: boolean,
     onToggleExpand: (id: number) => void,
     onUpdateObject: (id: number, updates: Partial<GameObject>) => void
-}> = ({ obj, level, selectedId, onSelect, onSetParent, hasChildren, isExpanded, onToggleExpand, onUpdateObject }) => {
-    
+}> = ({ obj, level, selectedId, onSelect, onSetParent, onSaveObjectAsGlobal, hasChildren, isExpanded, onToggleExpand, onUpdateObject }) => {
+    const [isDragTarget, setIsDragTarget] = useState(false);
+
     const handleDragStart = (e: React.DragEvent) => {
         e.dataTransfer.setData('application/game-object-id', obj.id.toString());
-        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.effectAllowed = 'copyMove';
         e.stopPropagation();
     };
 
     const handleDragOver = (e: React.DragEvent) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
+        if (e.dataTransfer.types.includes('application/game-object-id')) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (!isDragTarget) setIsDragTarget(true);
+        }
+    };
+
+    const handleDragLeave = () => {
+        if (isDragTarget) setIsDragTarget(false);
     };
 
     const handleDrop = (e: React.DragEvent) => {
+        setIsDragTarget(false);
+        const childIdStr = e.dataTransfer.getData('application/game-object-id');
+        if (!childIdStr) return;
         e.preventDefault();
         e.stopPropagation();
-        const childId = Number(e.dataTransfer.getData('application/game-object-id'));
+        const childId = Number(childIdStr);
         if (childId && !Number.isNaN(childId) && childId !== obj.id) {
             onSetParent(childId, obj.id);
         }
@@ -58,15 +78,19 @@ const ObjectTreeItem: React.FC<{
 
     return (
         <div
+            data-testid={`hierarchy-item-${obj.id}`}
             onClick={(e) => { e.stopPropagation(); onSelect(obj.id); }}
             draggable={true}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             className={`group flex items-center h-7 px-1 cursor-pointer select-none transition-colors border-l-2 ${
-                selectedId === obj.id
-                    ? 'bg-indigo-600/30 border-indigo-500 text-white'
-                    : 'hover:bg-white/5 border-transparent text-gray-400'
+                isDragTarget
+                    ? 'bg-emerald-600/35 border-emerald-400 text-white ring-1 ring-inset ring-emerald-400/70'
+                    : selectedId === obj.id
+                        ? 'bg-indigo-600/30 border-indigo-500 text-white'
+                        : 'hover:bg-white/5 border-transparent text-gray-400'
             }`}
             style={{ paddingLeft: `${(level * 12) + 4}px` }}
         >
@@ -98,10 +122,32 @@ const ObjectTreeItem: React.FC<{
                 <span className="text-[8px] font-mono px-1 rounded bg-emerald-600/30 text-emerald-300 mr-1 shrink-0">3D</span>
             )}
 
-            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 pr-1">
+            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pr-1">
+                {obj.parentId && (
+                    <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onSetParent(obj.id, null); }}
+                        className="p-1 hover:text-amber-300 text-gray-500"
+                        title="Desvincular del objeto padre"
+                    >
+                        <Unlink size={11} />
+                    </button>
+                )}
+                {onSaveObjectAsGlobal && (
+                    <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onSaveObjectAsGlobal(obj); }}
+                        className="p-1 hover:text-amber-300 text-gray-500"
+                        title="Guardar idéntico como Objeto Global"
+                    >
+                        <Globe size={11} />
+                    </button>
+                )}
                 <button 
+                    type="button"
                     onClick={(e) => { e.stopPropagation(); onUpdateObject(obj.id, { visible: obj.visible === false }); }}
                     className={`p-1 hover:text-white ${obj.visible === false ? 'text-indigo-400' : 'text-gray-600'}`}
+                    title={obj.visible === false ? 'Mostrar' : 'Ocultar'}
                 >
                     {obj.visible === false ? <EyeOff size={12} /> : <Eye size={12} />}
                 </button>
@@ -111,43 +157,18 @@ const ObjectTreeItem: React.FC<{
     );
 };
 
-interface SceneHierarchyProps {
-  scenes: Scene[];
-  activeSceneId: string | null;
-  onSelectScene: (id: string) => void;
-  onAddScene: () => void;
-  onCloneScene?: (id: string) => void;
-  onDeleteScene?: (id: string) => void;
-  objects: GameObject[];
-  globalObjects?: GameObject[];
-  onAddObject: (props?: Partial<GameObject>) => void;
-  onDeleteGlobalObject?: (name: string) => void;
-  selectedId: number | null;
-  onSelect: (id: number) => void;
-  onUpdateObject: (id: number, updates: Partial<GameObject>) => void;
-  assets: GameAsset[];
-  onAddAsset: (asset: GameAsset) => void;
-  onUpdateAsset: (asset: GameAsset) => void;
-  onDeleteAsset?: (assetId: string) => void;
-  onOpenAnimationEditor: () => void;
-  onOpenSpriteEditor: (assetId: string | null) => void;
-  onOpenAudioLab: () => void;
-  onOpenSoundtrackEditor: () => void;
-  width: number;
-  onToggleCollapse: () => void;
-}
-
 const ObjectTree: React.FC<{
     objects: GameObject[],
     parentId: number | null,
     selectedId: number | null,
     onSelect: (id: number) => void,
     onSetParent: (childId: number, parentId: number | null) => void,
+    onSaveObjectAsGlobal?: (obj: GameObject) => void,
     onUpdateObject: (id: number, updates: Partial<GameObject>) => void,
     level: number,
     expandedIds: Set<number>,
     onToggleExpand: (id: number) => void
-}> = ({ objects, parentId, selectedId, onSelect, onSetParent, onUpdateObject, level, expandedIds, onToggleExpand }) => {
+}> = ({ objects, parentId, selectedId, onSelect, onSetParent, onSaveObjectAsGlobal, onUpdateObject, level, expandedIds, onToggleExpand }) => {
     const children = objects.filter(o => (o.parentId || null) === parentId);
     if (children.length === 0) return null;
 
@@ -164,6 +185,7 @@ const ObjectTree: React.FC<{
                             selectedId={selectedId} 
                             onSelect={onSelect} 
                             onSetParent={onSetParent}
+                            onSaveObjectAsGlobal={onSaveObjectAsGlobal}
                             hasChildren={hasChildren}
                             isExpanded={isExpanded}
                             onToggleExpand={onToggleExpand}
@@ -176,6 +198,7 @@ const ObjectTree: React.FC<{
                                 selectedId={selectedId}
                                 onSelect={onSelect}
                                 onSetParent={onSetParent}
+                                onSaveObjectAsGlobal={onSaveObjectAsGlobal}
                                 onUpdateObject={onUpdateObject}
                                 level={level + 1}
                                 expandedIds={expandedIds}
@@ -199,6 +222,10 @@ interface SceneHierarchyProps {
   objects: GameObject[];
   globalObjects?: GameObject[];
   onAddObject: (props?: Partial<GameObject>) => void;
+  onAddObjectsBatch?: (objs: GameObject[]) => void;
+  onSaveObjectAsGlobal?: (obj: GameObject) => void;
+  onOpenGlobalObjects?: () => void;
+  onDeleteGlobalObject?: (name: string) => void;
   selectedId: number | null;
   onSelect: (id: number) => void;
   onUpdateObject: (id: number, updates: Partial<GameObject>) => void;
@@ -215,19 +242,23 @@ interface SceneHierarchyProps {
   onOpenPoseAnimationEditor?: () => void;
   projectData?: any;
   onUpdateProjectData?: (updates: any) => void;
+  showToast?: (msg: string) => void;
 }
 
 const SceneHierarchy: React.FC<SceneHierarchyProps> = ({ 
     scenes, activeSceneId, onSelectScene, onAddScene, onCloneScene, onDeleteScene,
-    objects, globalObjects = [], onAddObject, 
+    objects, globalObjects = [], onAddObject, onAddObjectsBatch, onSaveObjectAsGlobal, onOpenGlobalObjects,
     selectedId, onSelect, onUpdateObject, 
-    assets, onAddAsset, onDeleteAsset, onOpenAnimationEditor, onOpenPoseAnimationEditor, onOpenSpriteEditor, onOpenAudioLab, onOpenSoundtrackEditor, 
-    width, onToggleCollapse, projectData, onUpdateProjectData
+    assets, onAddAsset, onDeleteAsset, onOpenAnimationEditor, onOpenPoseAnimationEditor, onOpenSpriteEditor,
+    width, onToggleCollapse, projectData, onUpdateProjectData, showToast
 }) => {
   const { t } = useLanguage();
   const [activeTab, setActiveTab] = useState<'scene' | 'project'>('scene');
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [showAssetsSection, setShowAssetsSection] = useState(true);
+  const [isRootDragOver, setIsRootDragOver] = useState(false);
+  const [isAddingFolder, setIsAddingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
 
   const toggleExpand = (id: number) => {
     setExpandedIds(prev => {
@@ -240,56 +271,20 @@ const SceneHierarchy: React.FC<SceneHierarchyProps> = ({
 
   const handleSetParent = (childId: number, newParentId: number | null) => {
     const objectsById = new Map<number, GameObject>(objects.map(o => [o.id, o]));
-    const child = objectsById.get(childId);
-    if (!child) return;
-
-    // Prevent cycle: child cannot be parented to itself or to one of its descendants
-    if (newParentId !== null) {
-      if (newParentId === childId) return;
-      let checkId: number | null | undefined = newParentId;
-      let isDescendant = false;
-      let safety = 100;
-      while (checkId && safety-- > 0) {
-        if (checkId === childId) {
-          isDescendant = true;
-          break;
-        }
-        checkId = objectsById.get(checkId)?.parentId;
-      }
-      if (isDescendant) return;
+    if (wouldCreateParentCycle(childId, newParentId, objectsById)) {
+      showToast?.('No se puede emparentar un objeto con sí mismo ni con uno de sus hijos.');
+      return;
     }
-
-    // Helper to calculate total absolute position
-    const getAbsPos = (id: number): { x: number; y: number } => {
-      let currId: number | null | undefined = id;
-      let tx = 0;
-      let ty = 0;
-      let safety = 100;
-      while (currId && safety-- > 0) {
-        const o = objectsById.get(currId);
-        if (!o) break;
-        tx += o.x;
-        ty += o.y;
-        currId = o.parentId;
-      }
-      return { x: tx, y: ty };
-    };
-
-    const currentChildAbs = getAbsPos(childId);
-    let newX = currentChildAbs.x;
-    let newY = currentChildAbs.y;
-
+    const updates = reparentGameObjectUpdates(childId, newParentId, objects);
+    if (!updates) return;
+    onUpdateObject(childId, updates);
     if (newParentId !== null) {
-      const parentAbs = getAbsPos(newParentId);
-      newX = currentChildAbs.x - parentAbs.x;
-      newY = currentChildAbs.y - parentAbs.y;
+      setExpandedIds(prev => {
+        const next = new Set(prev);
+        next.add(newParentId);
+        return next;
+      });
     }
-
-    onUpdateObject(childId, { 
-      parentId: newParentId, 
-      x: Math.round(newX), 
-      y: Math.round(newY) 
-    });
   };
 
   if (width <= 32) {
@@ -707,13 +702,22 @@ const SceneHierarchy: React.FC<SceneHierarchyProps> = ({
                     <button onClick={() => onAddObject()} className="p-1 hover:bg-white/5 rounded text-gray-400 hover:text-white"><Plus size={14} /></button>
                 </div>
                 <div 
-                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
+                    data-testid="hierarchy-root-dropzone"
+                    onDragOver={(e) => {
+                        if (e.dataTransfer.types.includes('application/game-object-id')) {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                            if (!isRootDragOver) setIsRootDragOver(true);
+                        }
+                    }}
+                    onDragLeave={() => setIsRootDragOver(false)}
                     onDrop={(e) => {
+                        setIsRootDragOver(false);
                         e.preventDefault();
                         const childId = Number(e.dataTransfer.getData('application/game-object-id'));
                         if (childId && !Number.isNaN(childId)) handleSetParent(childId, null);
                     }}
-                    className="min-h-[100px]"
+                    className={`min-h-[100px] rounded transition-colors ${isRootDragOver ? 'bg-indigo-950/30 ring-1 ring-inset ring-indigo-500/60' : ''}`}
                 >
                     <ObjectTree 
                         objects={objects}
@@ -721,84 +725,133 @@ const SceneHierarchy: React.FC<SceneHierarchyProps> = ({
                         selectedId={selectedId}
                         onSelect={onSelect}
                         onSetParent={handleSetParent}
+                        onSaveObjectAsGlobal={onSaveObjectAsGlobal}
                         onUpdateObject={onUpdateObject}
                         level={0}
                         expandedIds={expandedIds}
                         onToggleExpand={toggleExpand}
                     />
+                    {isRootDragOver && (
+                        <div className="text-[9px] text-indigo-300 text-center py-1 font-bold uppercase tracking-wider">
+                            Soltar aquí = Nivel raíz (desvincular padre)
+                        </div>
+                    )}
                 </div>
              </div>
           </div>
         ) : (
           <div className="p-2 space-y-4">
              <div>
-                <div className="flex justify-between items-center mb-2 px-1">
-                    <span className="text-[10px] uppercase font-bold text-gray-500 tracking-widest block">Nodos Globales (Plantillas)</span>
-                    <button 
-                        onClick={() => {
-                            const name = prompt("Nombre del nodo plantilla:");
-                            if (name && onUpdateProjectData && projectData) {
-                                const newNode = {
-                                    id: createUniqueId(),
-                                    name: name,
-                                    width: 50,
-                                    height: 50,
-                                    x: 0,
-                                    y: 0,
-                                    color: '#6366f1',
-                                    zIndex: 1,
-                                };
-                                onUpdateProjectData({ globalObjects: [...(projectData.globalObjects || []), newNode] });
-                            }
-                        }}
-                        className="p-1 hover:bg-white/5 rounded text-gray-400 hover:text-white"
-                        title="Nuevo Nodo Plantilla"
-                    >
-                        <Plus size={14} />
-                    </button>
+                <div className="flex justify-between items-center mb-2 px-1 gap-1">
+                    <span className="text-[10px] uppercase font-bold text-amber-400 tracking-widest flex items-center gap-1">
+                        <Globe size={11} /> Globales ({globalObjects.length})
+                    </span>
+                    <div className="flex items-center gap-1">
+                        {selectedId && onSaveObjectAsGlobal && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const sel = objects.find(o => o.id === selectedId);
+                                    if (sel) onSaveObjectAsGlobal(sel);
+                                }}
+                                className="px-1.5 py-0.5 rounded bg-amber-600/20 hover:bg-amber-600/40 text-amber-300 text-[9px] font-bold uppercase border border-amber-500/30"
+                                title="Añadir el objeto seleccionado como Objeto Global idéntico"
+                            >
+                                + Sel.
+                            </button>
+                        )}
+                        {onOpenGlobalObjects && (
+                            <button
+                                type="button"
+                                data-testid="hierarchy-open-globals-btn"
+                                onClick={onOpenGlobalObjects}
+                                className="px-1.5 py-0.5 rounded bg-[#2a2a2a] hover:bg-[#353535] text-gray-200 text-[9px] font-bold uppercase border border-[#404040]"
+                                title="Abrir Ventana de Objetos Globales"
+                            >
+                                Ventana
+                            </button>
+                        )}
+                    </div>
                 </div>
                 <div 
-                    className="space-y-1 mb-4 min-h-[40px] p-1 border border-dashed border-[#333] rounded"
+                    className="space-y-1 mb-4 min-h-[48px] p-1 border border-dashed border-[#333] rounded"
                     onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
                     onDrop={e => {
                         e.preventDefault();
                         const objIdStr = e.dataTransfer.getData('application/game-object-id');
-                        if (objIdStr && projectData && onUpdateProjectData) {
+                        if (objIdStr) {
                             const objId = Number(objIdStr);
                             const obj = objects.find(o => o.id === objId);
                             if (obj) {
-                                const newGlobal = { ...JSON.parse(JSON.stringify(obj)), id: createUniqueId() };
-                                onUpdateProjectData({ globalObjects: [...(projectData.globalObjects || []), newGlobal] });
+                                if (onSaveObjectAsGlobal) {
+                                    onSaveObjectAsGlobal(obj);
+                                } else if (projectData && onUpdateProjectData) {
+                                    const template = buildGlobalObjectTemplate(obj, objects);
+                                    const list = projectData.globalObjects || [];
+                                    const exists = list.some((g: GameObject) => g.name === template.name);
+                                    onUpdateProjectData({
+                                        globalObjects: exists
+                                            ? list.map((g: GameObject) => (g.name === template.name ? template : g))
+                                            : [...list, template],
+                                    });
+                                }
                             }
                         }
                     }}
                 >
-                    {(projectData?.globalObjects || []).length === 0 && (
-                        <div className="text-[9px] text-gray-500 text-center py-2">Arrastra nodos aquí para guardarlos</div>
+                    {globalObjects.length === 0 && (
+                        <div className="text-[9px] text-gray-500 text-center py-2">Arrastra un objeto aquí para guardarlo idéntico</div>
                     )}
-                    {(projectData?.globalObjects || []).map(gObj => (
+                    {globalObjects.map(gObj => (
                         <div 
                             key={gObj.id}
                             draggable
                             onDragStart={(e) => {
                                 e.dataTransfer.setData('application/game-object-template', JSON.stringify(gObj));
                             }}
-                            className="flex items-center justify-between p-1 hover:bg-white/5 rounded cursor-grab group"
+                            className="flex items-center justify-between p-1.5 bg-[#1a1a1f] hover:bg-[#25252d] border border-[#2c2c35] rounded cursor-grab group gap-1"
                         >
-                            <div className="flex items-center gap-1">
-                                <Box size={12} className="text-indigo-400" />
-                                <span className="text-[10px] text-gray-300">{gObj.name}</span>
+                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                {gObj.imageUrl ? (
+                                    <img src={gObj.imageUrl} className="w-4 h-4 object-contain rounded-sm shrink-0" alt="" />
+                                ) : (
+                                    <span
+                                        className="w-3.5 h-3.5 rounded-sm border border-white/20 shrink-0"
+                                        style={{ backgroundColor: gObj.color && gObj.color !== 'transparent' ? gObj.color : '#6366f1' }}
+                                    />
+                                )}
+                                <span className="text-[10px] text-gray-200 truncate">{gObj.name}</span>
+                                {(gObj.modelUrl || gObj.shape3D) && (
+                                    <span className="text-[8px] px-1 rounded bg-emerald-600/30 text-emerald-300 font-mono shrink-0">3D</span>
+                                )}
                             </div>
-                            <button 
-                                onClick={() => {
-                                    if(confirm("¿Eliminar plantilla?")) {
-                                        onUpdateProjectData?.({ globalObjects: projectData.globalObjects?.filter(o => o.id !== gObj.id) });
-                                    }
-                                }}
-                                className="text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100"
-                            >
-                                <Trash2 size={10} />
-                            </button>
+                            <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const spawned = instantiateGlobalObject(gObj);
+                                        if (onAddObjectsBatch) {
+                                            onAddObjectsBatch(spawned.allObjects);
+                                        } else if (spawned.root) {
+                                            onAddObject(spawned.root);
+                                        }
+                                    }}
+                                    className="px-1.5 py-0.5 rounded bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white text-[9px] font-bold"
+                                    title="Insertar en escena"
+                                >
+                                    +
+                                </button>
+                                <button 
+                                    type="button"
+                                    onClick={() => {
+                                        onUpdateProjectData?.({ globalObjects: (projectData?.globalObjects || []).filter((o: GameObject) => o.id !== gObj.id) });
+                                    }}
+                                    className="text-gray-500 hover:text-red-400 opacity-70 group-hover:opacity-100 p-0.5"
+                                    title="Eliminar global"
+                                >
+                                    <Trash2 size={10} />
+                                </button>
+                            </div>
                         </div>
                     ))}
                 </div>
@@ -816,13 +869,8 @@ const SceneHierarchy: React.FC<SceneHierarchyProps> = ({
                             {showAssetsSection ? 'Ocultar' : 'Mostrar'}
                         </button>
                         <button 
-                            onClick={() => {
-                                const name = prompt("Nombre de la carpeta:");
-                                if (name && onUpdateProjectData && projectData) {
-                                    const newFolder = { id: 'folder_' + Date.now(), name };
-                                    onUpdateProjectData({ assetFolders: [...(projectData.assetFolders || []), newFolder] });
-                                }
-                            }}
+                            type="button"
+                            onClick={() => setIsAddingFolder(prev => !prev)}
                             className="p-1 hover:bg-white/5 rounded text-gray-400 hover:text-white"
                             title="Nueva Carpeta"
                         >
@@ -830,6 +878,45 @@ const SceneHierarchy: React.FC<SceneHierarchyProps> = ({
                         </button>
                     </div>
                 </div>
+
+                {isAddingFolder && (
+                    <div className="flex items-center gap-1 mb-2 px-1">
+                        <input
+                            type="text"
+                            value={newFolderName}
+                            onChange={e => setNewFolderName(e.target.value)}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter' && newFolderName.trim() && onUpdateProjectData && projectData) {
+                                    const newFolder = { id: 'folder_' + Date.now(), name: newFolderName.trim() };
+                                    onUpdateProjectData({ assetFolders: [...(projectData.assetFolders || []), newFolder] });
+                                    setNewFolderName('');
+                                    setIsAddingFolder(false);
+                                }
+                                if (e.key === 'Escape') {
+                                    setIsAddingFolder(false);
+                                    setNewFolderName('');
+                                }
+                            }}
+                            placeholder="Nombre carpeta..."
+                            autoFocus
+                            className="flex-1 bg-[#151515] border border-indigo-500 rounded px-2 py-1 text-[10px] text-white outline-none"
+                        />
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (newFolderName.trim() && onUpdateProjectData && projectData) {
+                                    const newFolder = { id: 'folder_' + Date.now(), name: newFolderName.trim() };
+                                    onUpdateProjectData({ assetFolders: [...(projectData.assetFolders || []), newFolder] });
+                                    setNewFolderName('');
+                                    setIsAddingFolder(false);
+                                }
+                            }}
+                            className="px-2 py-1 rounded bg-indigo-600 text-white text-[10px] font-bold"
+                        >
+                            OK
+                        </button>
+                    </div>
+                )}
 
                 {showAssetsSection && (
                   <>
@@ -851,14 +938,19 @@ const SceneHierarchy: React.FC<SceneHierarchyProps> = ({
                             >
                                 <div className="text-[10px] font-bold text-gray-400 p-1 flex justify-between items-center">
                                     <span>📁 {folder.name}</span>
-                                    <button onClick={() => {
-                                        if (confirm("¿Borrar carpeta y sus recursos?")) {
+                                    <button
+                                        type="button"
+                                        onClick={() => {
                                             onUpdateProjectData?.({
                                                 assetFolders: projectData.assetFolders.filter((f: any) => f.id !== folder.id),
-                                                assets: projectData.assets.filter(a => a.folderId !== folder.id)
+                                                assets: projectData.assets.map((a: GameAsset) => a.folderId === folder.id ? { ...a, folderId: null } : a)
                                             });
-                                        }
-                                    }} className="text-red-500 hover:text-red-400"><Trash2 size={10} /></button>
+                                        }}
+                                        className="text-red-500 hover:text-red-400"
+                                        title="Quitar carpeta"
+                                    >
+                                        <Trash2 size={10} />
+                                    </button>
                                 </div>
                                 <div className="grid grid-cols-4 gap-1 mt-1">
                                     {assets.filter(a => a.folderId === folder.id).map(asset => (

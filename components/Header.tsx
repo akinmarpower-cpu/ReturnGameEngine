@@ -40,6 +40,8 @@ interface HeaderProps {
   onChangeSceneMode?: (mode: '2d' | '3d') => void;
   onOpenCharacterSkins?: () => void;
   onOpenPoseAnimationEditor?: () => void;
+  onOpenGlobalObjects?: () => void;
+  globalObjectsCount?: number;
   onOpenPrivacyPolicy?: () => void;
 }
 
@@ -50,7 +52,7 @@ const Header: React.FC<HeaderProps> = ({
   projectIcon, onUpdateProjectIcon,
   activeScene, projectData, onUpdateProjectData, onAddObject,
   sceneMode = '2d', onChangeSceneMode,
-  onOpenCharacterSkins, onOpenPoseAnimationEditor, onOpenPrivacyPolicy
+  onOpenCharacterSkins, onOpenPoseAnimationEditor, onOpenGlobalObjects, globalObjectsCount = 0, onOpenPrivacyPolicy
 }) => {
   const { t, language, setLanguage } = useLanguage();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -200,6 +202,15 @@ const Header: React.FC<HeaderProps> = ({
                  <button onClick={onOpenPoseAnimationEditor} data-testid="header-pose-editor-btn" className="p-1 px-3 border-l border-white/5 hover:bg-white/5 text-pink-400 hover:text-pink-300 transition-colors flex items-center gap-1.5 text-[9px] font-bold uppercase cursor-pointer whitespace-nowrap shrink-0" title="Editor de Poses y Formas 3D">
                     <Box size={11} className="text-pink-400" />
                     <span className="hidden xl:inline text-[9px] text-pink-300">Poses 3D</span>
+                 </button>
+             )}
+             {onOpenGlobalObjects && (
+                 <button onClick={onOpenGlobalObjects} data-testid="header-globals-btn" className="p-1 px-3 border-l border-white/5 hover:bg-white/5 text-amber-400 hover:text-amber-300 transition-colors flex items-center gap-1.5 text-[9px] font-bold uppercase cursor-pointer whitespace-nowrap shrink-0" title="Ventana de Objetos Globales">
+                    <Globe size={11} className="text-amber-400" />
+                    <span className="hidden xl:inline text-[9px] text-amber-300">Globales</span>
+                    {globalObjectsCount > 0 && (
+                        <span className="text-[8px] font-mono bg-amber-500/20 text-amber-200 px-1 rounded">{globalObjectsCount}</span>
+                    )}
                  </button>
              )}
              <button onClick={onSave} className="p-1 px-3 border-l border-white/5 hover:bg-white/5 text-indigo-400 hover:text-indigo-300 transition-colors" title="Guardar">

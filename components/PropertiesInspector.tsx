@@ -23,7 +23,8 @@ import {
   Database,
   Video,
   Film,
-  Camera
+  Camera,
+  Globe
 } from 'lucide-react';
 import { useLanguage } from '../LanguageContext';
 import { availableBehaviors } from '../behaviors/definitions';
@@ -35,6 +36,11 @@ import {
   getObject3DRotation,
   inferShape3D,
 } from '../utils/threeObjectBuilder';
+import {
+  buildGlobalObjectTemplate,
+  reparentGameObjectUpdates,
+  wouldCreateParentCycle,
+} from '../utils/objectHierarchy';
 
 const SHAPE_3D_LABELS: { value: Shape3D; label: string }[] = [
   { value: 'box', label: 'Cubo (Box)' },
@@ -159,6 +165,7 @@ interface PropertiesInspectorProps {
   onDeleteObject: (id: number) => void;
   onCloneObject: (id: number) => void;
   onSaveAsGlobalObject?: (obj: GameObject) => void;
+  onOpenGlobalObjects?: () => void;
   onAddAsset?: (asset: GameAsset) => void;
   onDeleteAsset?: (assetId: string) => void;
   width: number;
@@ -166,7 +173,7 @@ interface PropertiesInspectorProps {
 }
 
 const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({ 
-    selectedObject, projectData, onUpdateProjectData, onUpdateObject, onDeleteObject, onCloneObject, onSaveAsGlobalObject, onAddAsset, onDeleteAsset, width, onToggleCollapse 
+    selectedObject, projectData, onUpdateProjectData, onUpdateObject, onDeleteObject, onCloneObject, onSaveAsGlobalObject, onOpenGlobalObjects, onAddAsset, onDeleteAsset, width, onToggleCollapse 
 }) => {
   const { t } = useLanguage();
   const [openSections, setOpenSections] = useState<Set<string>>(new Set(['transform', 'properties3d', 'appearance', 'logic', 'scene', 'scene3d', 'settings', 'collision', 'tilemap', 'objectVariables', 'globalVariables', 'uiSettings']));
@@ -507,6 +514,32 @@ const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                         <Trash2 size={12} /> ELIMINAR
                     </button>
                 </div>
+                {onSaveAsGlobalObject && (
+                    <div className="flex gap-1 mt-1.5">
+                        <button
+                            type="button"
+                            data-testid="inspector-save-global-btn"
+                            onClick={() => {
+                                const template = buildGlobalObjectTemplate(selectedObject, activeScene?.gameObjects || []);
+                                onSaveAsGlobalObject(template);
+                            }}
+                            className="flex-1 flex items-center justify-center gap-1.5 py-1.5 bg-amber-600/20 hover:bg-amber-600/35 rounded text-[10px] font-bold text-amber-300 hover:text-amber-200 transition-colors border border-amber-500/30"
+                            title="Guardar este objeto idéntico (con su modelo 3D, apariencia, hijos y scripts) en Objetos Globales"
+                        >
+                            <Globe size={12} /> Hacer Objeto Global (Idéntico)
+                        </button>
+                        {onOpenGlobalObjects && (
+                            <button
+                                type="button"
+                                onClick={onOpenGlobalObjects}
+                                className="px-2.5 py-1.5 bg-[#252525] hover:bg-[#323232] rounded text-[10px] font-bold text-gray-300 border border-[#3a3a3a] transition-colors"
+                                title="Abrir Ventana de Objetos Globales"
+                            >
+                                Ventana
+                            </button>
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* Transform */}
@@ -561,16 +594,32 @@ const PropertiesInspector: React.FC<PropertiesInspectorProps> = ({
                         <CompactInput type="number" value={selectedObject.zIndex || 0} onChange={val => handleUpdate({ zIndex: val as number })} />
                     </PropertyRow>
                     <PropertyRow label="Padre">
-                        <select
-                            value={selectedObject.parentId || ''}
-                            onChange={e => handleUpdate({ parentId: e.target.value ? Number(e.target.value) : null })}
-                            className="w-full bg-[#1a1a1a] border border-transparent hover:border-[#444444] focus:border-indigo-500 rounded px-1.5 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer"
-                        >
-                            <option value="">(Ninguno)</option>
-                            {(activeScene ? activeScene.gameObjects.filter(o => o.id !== selectedObject.id) : []).map(obj => (
-                                <option key={obj.id} value={obj.id}>{obj.name}</option>
-                            ))}
-                        </select>
+                        {(() => {
+                            const sceneObjs = activeScene?.gameObjects || [];
+                            const objMap = new Map<number, GameObject>(sceneObjs.map(o => [o.id, o]));
+                            const validParents = sceneObjs.filter(
+                                o => o.id !== selectedObject.id && !wouldCreateParentCycle(selectedObject.id, o.id, objMap)
+                            );
+                            return (
+                                <select
+                                    data-testid="inspector-parent-select"
+                                    value={selectedObject.parentId || ''}
+                                    onChange={e => {
+                                        const nextParentId = e.target.value ? Number(e.target.value) : null;
+                                        const updates = reparentGameObjectUpdates(selectedObject.id, nextParentId, sceneObjs);
+                                        if (updates) {
+                                            handleUpdate(updates);
+                                        }
+                                    }}
+                                    className="w-full bg-[#1a1a1a] border border-transparent hover:border-[#444444] focus:border-indigo-500 rounded px-1.5 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer"
+                                >
+                                    <option value="">(Ninguno)</option>
+                                    {validParents.map(obj => (
+                                        <option key={obj.id} value={obj.id}>{obj.name}</option>
+                                    ))}
+                                </select>
+                            );
+                        })()}
                     </PropertyRow>
                 </div>
             )}

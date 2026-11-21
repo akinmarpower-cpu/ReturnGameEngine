@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { useLanguage } from '../LanguageContext';
 import SceneEditor3D, { type Camera3DSnapshot } from './SceneEditor3D';
-import { createUniqueId } from '../utils/threeObjectBuilder';
+import { instantiateGlobalObject, reparentGameObjectUpdates } from '../utils/objectHierarchy';
 
 interface SceneEditorProps {
   scene: Scene | undefined;
@@ -25,7 +25,9 @@ interface SceneEditorProps {
   onSelect: (id: number | null) => void;
   onUpdateObject: (id: number, updates: Partial<GameObject>) => void;
   onAddObject: (initialProps?: Partial<GameObject>) => void;
+  onAddObjectsBatch?: (objs: GameObject[]) => void;
   onOpenEventEditor: () => void;
+  onOpenGlobalObjects?: () => void;
   gameWidth: number;
   gameHeight: number;
   globalObjects?: GameObject[];
@@ -46,7 +48,9 @@ const SceneEditor: React.FC<SceneEditorProps> = ({
   onSelect,
   onUpdateObject,
   onAddObject,
+  onAddObjectsBatch,
   onOpenEventEditor,
+  onOpenGlobalObjects,
   gameWidth,
   gameHeight,
   globalObjects,
@@ -502,14 +506,20 @@ const SceneEditor: React.FC<SceneEditorProps> = ({
 
     if (templateString) {
       try {
-        const templateObj = JSON.parse(templateString);
-        onAddObject({
-          ...templateObj,
-          id: createUniqueId(),
+        const templateObj = JSON.parse(templateString) as GameObject;
+        const nextX = Math.round(dropX - (templateObj.width || 50) / 2);
+        const nextY = Math.round(dropY - (templateObj.height || 50) / 2);
+        const { root, allObjects } = instantiateGlobalObject(templateObj, {
           parentId: null,
-          x: Math.round(dropX - (templateObj.width || 50) / 2),
-          y: Math.round(dropY - (templateObj.height || 50) / 2),
+          x: nextX,
+          y: nextY,
         });
+        if (allObjects.length > 1 && onAddObjectsBatch) {
+          onAddObjectsBatch(allObjects);
+        } else {
+          allObjects.forEach((o) => onAddObject(o));
+        }
+        onSelect(root.id);
       } catch (err) {
         console.error('Error parsing template string', err);
       }
@@ -615,15 +625,56 @@ const SceneEditor: React.FC<SceneEditorProps> = ({
 
   const handleObjectDragOver = (e: React.DragEvent, objId: number) => {
     e.preventDefault();
-    if (e.dataTransfer.types.includes('application/game-asset')) {
+    if (
+      e.dataTransfer.types.includes('application/game-asset') ||
+      e.dataTransfer.types.includes('application/game-object-id') ||
+      e.dataTransfer.types.includes('application/game-object-template')
+    ) {
       e.stopPropagation();
-      e.dataTransfer.dropEffect = 'copy';
+      e.dataTransfer.dropEffect = e.dataTransfer.types.includes('application/game-object-id') ? 'move' : 'copy';
       setDragOverObjectId(objId);
     }
   };
 
   const handleObjectDrop = (e: React.DragEvent, objId: number) => {
     e.preventDefault();
+    if (e.dataTransfer.types.includes('application/game-object-id')) {
+      e.stopPropagation();
+      setDragOverObjectId(null);
+      const childId = Number(e.dataTransfer.getData('application/game-object-id'));
+      if (childId && !Number.isNaN(childId) && childId !== objId) {
+        const reparentUpdates = reparentGameObjectUpdates(childId, objId, localObjectsRef.current);
+        if (reparentUpdates) {
+          onUpdateObject(childId, reparentUpdates);
+          onSelect(childId);
+        }
+      }
+      return;
+    }
+    if (e.dataTransfer.types.includes('application/game-object-template')) {
+      e.stopPropagation();
+      setDragOverObjectId(null);
+      const templateStr = e.dataTransfer.getData('application/game-object-template');
+      if (!templateStr) return;
+      try {
+        const tpl = JSON.parse(templateStr) as GameObject;
+        const { root, allObjects } = instantiateGlobalObject(tpl, {
+          parentId: objId,
+          x: 0,
+          y: 0,
+          position3D: { x: 0, y: 0, z: 0 },
+        });
+        if (allObjects.length > 1 && onAddObjectsBatch) {
+          onAddObjectsBatch(allObjects);
+        } else {
+          allObjects.forEach((o) => onAddObject(o));
+        }
+        onSelect(root.id);
+      } catch (err) {
+        console.error('Failed to drop template onto object:', err);
+      }
+      return;
+    }
     if (e.dataTransfer.types.includes('application/game-asset')) {
       e.stopPropagation();
       setDragOverObjectId(null);
@@ -861,7 +912,18 @@ const SceneEditor: React.FC<SceneEditorProps> = ({
           Eventos / Bloques
         </button>
 
-        {globalObjects && globalObjects.length > 0 && (
+        {onOpenGlobalObjects && (
+          <button
+            onClick={onOpenGlobalObjects}
+            data-testid="scene-toolbar-globals-btn"
+            className="flex items-center gap-1.5 hover:bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2.5 py-1 rounded text-[11px] font-bold uppercase tracking-wider transition-colors shrink-0"
+            title="Abrir Ventana de Objetos Globales"
+          >
+            <Layers size={14} className="text-amber-400" />
+            Globales ({globalObjects?.length || 0})
+          </button>
+        )}
+        {!onOpenGlobalObjects && globalObjects && globalObjects.length > 0 && (
           <div className="relative group shrink-0">
             <button className="flex items-center gap-1.5 hover:bg-white/5 text-gray-300 px-2.5 py-1 rounded text-[11px] font-bold uppercase tracking-wider transition-colors">
               <Layers size={14} className="text-yellow-400" />
@@ -873,13 +935,17 @@ const SceneEditor: React.FC<SceneEditorProps> = ({
                   <button
                     key={obj.id}
                     onClick={() => {
-                      onAddObject({
-                        ...JSON.parse(JSON.stringify(obj)),
-                        id: createUniqueId(),
+                      const { root, allObjects } = instantiateGlobalObject(obj, {
                         x: 100,
                         y: 100,
                         position3D: obj.position3D || { x: 0, y: 0, z: 0 },
                       });
+                      if (allObjects.length > 1 && onAddObjectsBatch) {
+                        onAddObjectsBatch(allObjects);
+                      } else {
+                        allObjects.forEach((o) => onAddObject(o));
+                      }
+                      onSelect(root.id);
                     }}
                     className="w-full text-left px-3 py-1.5 hover:bg-[#333333] text-gray-300 hover:text-white rounded text-[11px] font-medium truncate"
                   >
@@ -932,6 +998,7 @@ const SceneEditor: React.FC<SceneEditorProps> = ({
           onSelect={onSelect}
           onUpdateObject={onUpdateObject}
           onAddObject={onAddObject}
+          onAddObjectsBatch={onAddObjectsBatch}
           isPaused={is3DPaused}
           cameraCacheRef={camera3DCacheRef}
         />

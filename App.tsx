@@ -19,9 +19,11 @@ import PoseAnimationEditor from './components/PoseAnimationEditor';
 import AudioLab from './components/AudioLab';
 import SoundtrackEditor from './components/SoundtrackEditor';
 import CharacterSkinsEditor from './components/CharacterSkinsEditor';
+import GlobalObjectsModal from './components/GlobalObjectsModal';
 import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
 import { PrototypeNoticeModal } from './components/PrototypeNoticeModal';
 import Toast from './components/Toast';
+import { buildGlobalObjectTemplate } from './utils/objectHierarchy';
 import { HierarchyIcon } from './components/icons/HierarchyIcon';
 import { EditorIcon } from './components/icons/EditorIcon';
 import { InspectorIcon } from './components/icons/InspectorIcon';
@@ -151,6 +153,7 @@ const AppContent: React.FC = () => {
   const [showPoseAnimationEditor, setShowPoseAnimationEditor] = useState(false);
   const [showSoundtrackEditor, setShowSoundtrackEditor] = useState(false);
   const [showCharacterSkinsEditor, setShowCharacterSkinsEditor] = useState(false);
+  const [showGlobalObjectsModal, setShowGlobalObjectsModal] = useState(false);
   const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
   
   const [hierarchyWidth, setHierarchyWidth] = useState(260);
@@ -486,6 +489,39 @@ const AppContent: React.FC = () => {
       setSelectedObjectId(createdId);
   }, [updateProjectData]);
 
+  const handleAddObjectsBatch = useCallback((objs: GameObject[]) => {
+      if (!objs || objs.length === 0) return;
+      updateProjectData(prev => {
+          if (!prev) return prev;
+          const targetScene = prev.scenes.find(s => s.id === prev.activeSceneId) || prev.scenes[0];
+          if (!targetScene) return prev;
+          const updatedScene = {
+              ...targetScene,
+              gameObjects: [...targetScene.gameObjects, ...objs],
+          };
+          return {
+              ...prev,
+              scenes: prev.scenes.map(s => s.id === targetScene.id ? updatedScene : s),
+          };
+      });
+      setSelectedObjectId(objs[0].id);
+  }, [updateProjectData]);
+
+  const handleSaveObjectAsGlobal = useCallback((obj: GameObject) => {
+      const curScene = projectDataRef.current?.scenes.find(s => s.id === projectDataRef.current?.activeSceneId);
+      const template = buildGlobalObjectTemplate(obj, curScene?.gameObjects || []);
+      updateProjectData(prev => {
+          if (!prev) return prev;
+          const list = prev.globalObjects ?? [];
+          const exists = list.some(o => o.name === template.name);
+          return {
+              ...prev,
+              globalObjects: exists ? list.map(o => o.name === template.name ? template : o) : [...list, template]
+          };
+      });
+      showToast(`"${template.name}" guardado como Objeto Global idéntico`);
+  }, [updateProjectData, showToast]);
+
   const handleDeleteObject = useCallback((id: number) => {
       updateProjectData(prev => {
           if (!prev) return prev;
@@ -719,6 +755,8 @@ const AppContent: React.FC = () => {
             onChangeSceneMode={handleChangeSceneMode}
             onOpenCharacterSkins={() => setShowCharacterSkinsEditor(true)}
             onOpenPoseAnimationEditor={() => setShowPoseAnimationEditor(true)}
+            onOpenGlobalObjects={() => setShowGlobalObjectsModal(true)}
+            globalObjectsCount={projectData?.globalObjects?.length ?? 0}
             onOpenPrivacyPolicy={() => setShowPrivacyPolicy(true)}
         />
         
@@ -796,6 +834,9 @@ const AppContent: React.FC = () => {
                             objects={activeScene?.gameObjects ?? []}
                             globalObjects={projectData?.globalObjects ?? []}
                             onAddObject={handleAddObject}
+                            onAddObjectsBatch={handleAddObjectsBatch}
+                            onSaveObjectAsGlobal={handleSaveObjectAsGlobal}
+                            onOpenGlobalObjects={() => setShowGlobalObjectsModal(true)}
                             selectedId={selectedObjectId}
                             onSelect={setSelectedObjectId}
                             onUpdateObject={handleUpdateObject}
@@ -812,6 +853,7 @@ const AppContent: React.FC = () => {
                             onToggleCollapse={() => setIsHierarchyCollapsed(!isHierarchyCollapsed)}
                             projectData={projectData}
                             onUpdateProjectData={updateProjectData}
+                            showToast={showToast}
                         />
                     </motion.div>
                 )}
@@ -825,6 +867,8 @@ const AppContent: React.FC = () => {
                     onSelect={setSelectedObjectId}
                     onUpdateObject={handleUpdateObject}
                     onAddObject={handleAddObject}
+                    onAddObjectsBatch={handleAddObjectsBatch}
+                    onOpenGlobalObjects={() => setShowGlobalObjectsModal(true)}
                     onOpenEventEditor={() => setShowEventEditor(true)}
                     assets={projectData?.assets ?? []}
                     gameWidth={projectData?.gameWidth ?? 1024}
@@ -862,17 +906,8 @@ const AppContent: React.FC = () => {
                             onUpdateObject={handleUpdateObject}
                             onDeleteObject={handleDeleteObject}
                             onCloneObject={handleCloneObject}
-                            onSaveAsGlobalObject={(obj) => {
-                                updateProjectData(prev => {
-                                    const list = prev.globalObjects ?? [];
-                                    const exists = list.some(o => o.name === obj.name);
-                                    return {
-                                        ...prev,
-                                        globalObjects: exists ? list.map(o => o.name === obj.name ? obj : o) : [...list, obj]
-                                    };
-                                });
-                                showToast("Guardado como objeto global");
-                            }}
+                            onSaveAsGlobalObject={handleSaveObjectAsGlobal}
+                            onOpenGlobalObjects={() => setShowGlobalObjectsModal(true)}
                             onAddAsset={handleAddAsset}
                             onDeleteAsset={handleDeleteAsset}
                             width={isInspectorCollapsed ? 32 : inspectorWidth}
@@ -1000,6 +1035,19 @@ const AppContent: React.FC = () => {
                 onClose={() => setShowCharacterSkinsEditor(false)}
                 projectData={projectData!}
                 onUpdateProjectData={updateProjectData}
+            />
+        )}
+        {showGlobalObjectsModal && projectData && (
+            <GlobalObjectsModal
+                isOpen={showGlobalObjectsModal}
+                onClose={() => setShowGlobalObjectsModal(false)}
+                projectData={projectData}
+                activeScene={activeScene}
+                onUpdateProjectData={updateProjectData}
+                onAddObject={handleAddObject}
+                onAddObjectsBatch={handleAddObjectsBatch}
+                onSelectObject={setSelectedObjectId}
+                onShowToast={showToast}
             />
         )}
         <PrivacyPolicyModal 
